@@ -1,0 +1,16 @@
+# Core dependencies
+django>=4.2.0,<5.0.0
+djangorestframework>=3.14.0,<4.0.0
+djangorestframework-simplejwt==5.3.1
+django-cors-headers>=4.2.0,<5.0.0
+psycopg2-binary==2.9.10
+python-dotenv==1.0.1
+
+# Production dependencies
+whitenoise==6.6.0
+gunicorn==21.2.0
+django-environ==0.11.2
+dj-database-url==2.1.0
+
+# Security
+django-debug-toolbar==4.2.0  # Only enable in development
