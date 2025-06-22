@@ -12,7 +12,7 @@ import dj_database_url
 # Initialize environ
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1']),
+    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-18-207-208-234.compute-1.amazonaws.com']),
     SECURE_SSL_REDIRECT=(bool, True),
     SESSION_COOKIE_SECURE=(bool, True),
     CSRF_COOKIE_SECURE=(bool, True),
