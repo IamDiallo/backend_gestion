@@ -1,6 +1,0 @@
-{
-  "status": "ok",
-  "version": "%VITE_CLIENT_VERSION%",
-  "environment": "%VITE_NODE_ENV%",
-  "buildDate": "%BUILD_DATE%"
-}

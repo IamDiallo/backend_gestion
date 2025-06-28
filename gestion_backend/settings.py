@@ -64,17 +64,19 @@ MIDDLEWARE = [
     'gestion_api.middleware.PermissionMiddleware',  # Add our custom middleware
 ]
 
-# CORS settings
-CORS_ALLOW_ALL_ORIGINS = True  # For development only
-CORS_ALLOW_CREDENTIALS = True
 
-# If CORS_ALLOW_ALL_ORIGINS is False, use these settings:
+CORS_ALLOW_ALL_ORIGINS = True  # Allow all origins for development
+CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
-    "http://ec2-3-84-250-165.compute-1.amazonaws.com",
-    "http://127.0.0.1:3000",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
+    "http://localhost:3000",
+    "http://localhost:5173",
 ]
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+]
+
+
 
 CORS_ALLOW_METHODS = [
     'DELETE',
@@ -194,11 +196,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
-    'DEFAULT_AUTHENTICATION_CLASSES': [
+    'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
         'rest_framework.authentication.SessionAuthentication',
         'rest_framework.authentication.BasicAuthentication',
-    ],
+    ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_VERSIONING_CLASS': 'rest_framework.versioning.URLPathVersioning',
@@ -230,6 +232,12 @@ SIMPLE_JWT = {
 
 # Tell Django to use our custom User model
 AUTH_USER_MODEL = 'auth.User'
+
+# Authentication backends
+AUTHENTICATION_BACKENDS = [
+    'django.contrib.auth.backends.ModelBackend',
+    # ...any other custom backends...
+]
 
 # Logging Configuration
 import os

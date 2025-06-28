@@ -7,7 +7,7 @@ from .models import (
     StockTransfer, StockTransferItem, Inventory, InventoryItem, 
     StockCard, DeliveryNote, DeliveryNoteItem, ChargeType, SaleCharge, 
     ClientGroup, Employee, Invoice, Quote, QuoteItem, CashFlow, 
-    BankReconciliation, BankReconciliationItem, FinancialReport
+    BankReconciliation, BankReconciliationItem, FinancialReport, Permission
 )
 
 # Register your models here
@@ -57,6 +57,7 @@ admin.site.register(Employee)
 admin.site.register(Invoice)
 admin.site.register(Quote)
 admin.site.register(QuoteItem)
+admin.site.register(Permission)
 
 # Register financial models
 @admin.register(CashFlow)
