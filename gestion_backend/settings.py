@@ -12,7 +12,7 @@ import dj_database_url
 # Initialize environ
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-18-207-208-234.compute-1.amazonaws.com']),
+    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-3-84-250-165.compute-1.amazonaws.com']),
     SECURE_SSL_REDIRECT=(bool, True),
     SESSION_COOKIE_SECURE=(bool, True),
     CSRF_COOKIE_SECURE=(bool, True),
@@ -69,12 +69,12 @@ CORS_ALLOW_ALL_ORIGINS = True  # For development only
 CORS_ALLOW_CREDENTIALS = True
 
 # If CORS_ALLOW_ALL_ORIGINS is False, use these settings:
-# CORS_ALLOWED_ORIGINS = [
-#     "http://localhost:3000",
-#     "http://127.0.0.1:3000",
-#     "http://localhost:8080",
-#     "http://127.0.0.1:8080",
-# ]
+CORS_ALLOWED_ORIGINS = [
+    "http://ec2-3-84-250-165.compute-1.amazonaws.com",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
 
 CORS_ALLOW_METHODS = [
     'DELETE',
