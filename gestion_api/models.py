@@ -573,6 +573,8 @@ class Sale(models.Model):
     discount_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2)
+    paid_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0) 
+    remaining_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, null=True, blank=True)
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -745,7 +745,8 @@ class SaleSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Sale
-        fields = ['id', 'reference', 'client', 'zone', 'date', 'status', 'subtotal', 'discount_amount', 'tax_amount', 'total_amount', 
+        fields = ['id', 'reference', 'client', 'zone', 'date', 'status', 'payment_status', 'workflow_state',
+                  'subtotal', 'discount_amount', 'tax_amount', 'total_amount', 'paid_amount', 'remaining_amount',
                   'notes', 'created_by', 'items']
 
     def create(self, validated_data):
@@ -843,6 +844,10 @@ class SaleViewSet(viewsets.ModelViewSet):
             
             # Serialize and save the updated sale
             updated_sale = serializer.save()
+            
+            # Update payment status and sale status based on payment amounts
+            self._update_payment_status_from_amounts(updated_sale)
+            
             new_status = updated_sale.status
             
             # If status changed to confirmed or delivered, update stock
@@ -851,7 +856,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 
             # If status changed from confirmed/delivered to cancelled, we need to restore stock
             elif old_status in ['confirmed', 'delivered'] and new_status == 'cancelled':
-                self._restore_stock_for_cancelled_sale(updated_sale)
+                self._restore_stock_for_cancelled_sale(updated_sale, request.user)
                 
             return Response(serializer.data)
             
@@ -906,12 +911,12 @@ class SaleViewSet(viewsets.ModelViewSet):
                         f"No stock record found for product {item.product.name} in zone {sale.zone.name}"
                     )
     
-    def _restore_stock_for_cancelled_sale(self, sale):
+    def _restore_stock_for_cancelled_sale(self, sale, user=None):
         """
-        Restore stock quantities when a sale is cancelled
+        Restore stock quantities and handle payment refunds when a sale is cancelled
         """
         with transaction.atomic():
-            # Process each item in the sale
+            # 1. Restore stock quantities
             for item in sale.items.all():
                 # Get or create the stock record
                 stock, created = Stock.objects.select_for_update().get_or_create(
@@ -937,7 +942,92 @@ class SaleViewSet(viewsets.ModelViewSet):
                     balance=stock.quantity,
                     notes=f"Cancelled sale: {sale.reference}"
                 )
+            
+            # 2. Handle payment refunds if any payments were made
+            if sale.paid_amount and sale.paid_amount > 0:
+                client = sale.client
+                
+                # Ensure client has an account for refunds
+                if not hasattr(client, 'account') or not client.account:
+                    # Create a client account if it doesn't exist
+                    from .models import Account, Currency
+                    default_currency = Currency.objects.filter(is_base=True).first()
+                    if not default_currency:
+                        default_currency = Currency.objects.first()
+                    
+                    client_account = Account.objects.create(
+                        name=f"Compte {client.name}",
+                        account_type='client',
+                        currency=default_currency,
+                        initial_balance=0,
+                        current_balance=0
+                    )
+                    client.account = client_account
+                    client.save()
+                
+                # Credit the client account with the paid amount (refund)
+                refund_amount = sale.paid_amount
+                client.account.current_balance += refund_amount
+                client.account.save()
+                
+                # Create account statement entry for the refund
+                from .models import AccountStatement
+                AccountStatement.objects.create(
+                    account=client.account,
+                    date=timezone.now().date(),
+                    transaction_type='refund',
+                    reference=f"CANCEL-REFUND-{sale.reference}",
+                    description=f"Remboursement pour annulation de vente {sale.reference}",
+                    credit=refund_amount,
+                    debit=0,
+                    balance=client.account.current_balance
+                )
+                
+                # Create cash flow record for the refund
+                CashFlow.objects.create(
+                    reference=f"CANCEL-REFUND-{sale.reference}",
+                    date=timezone.now().date(),
+                    flow_type='refund',
+                    amount=refund_amount,
+                    description=f"Remboursement pour annulation de vente {sale.reference}",
+                    account=client.account,
+                    related_document_type='sale',
+                    related_document_id=sale.id,
+                    created_by=user
+                )
 
+    def _update_payment_status_from_amounts(self, sale):
+        """
+        Update payment status and sale status based on payment amounts
+        """
+        # Calculate remaining amount
+        remaining_amount = sale.total_amount - (sale.paid_amount or 0)
+        
+        # Update payment status based on amounts
+        if sale.paid_amount is None or sale.paid_amount == 0:
+            payment_status = 'unpaid'
+        elif remaining_amount <= 0:
+            payment_status = 'paid'
+        else:
+            payment_status = 'partially_paid'
+        
+        # Update payment status if it has changed
+        if sale.payment_status != payment_status:
+            sale.payment_status = payment_status
+            
+            # Also update sale status to reflect payment status
+            # Only update if current status allows it (don't override manual status changes)
+            if payment_status == 'partially_paid' and sale.status in ['pending', 'confirmed', 'payment_pending']:
+                sale.status = 'partially_paid'
+                sale.workflow_state = 'partially_paid'
+            elif payment_status == 'paid' and sale.status in ['pending', 'confirmed', 'payment_pending', 'partially_paid']:
+                sale.status = 'paid'
+                sale.workflow_state = 'paid'
+            
+            sale.save()
+    
+    # ...existing code...
+    
     @action(detail=True, methods=['post'])
     def pay_from_account(self, request, pk=None):
         """
@@ -952,9 +1042,9 @@ class SaleViewSet(viewsets.ModelViewSet):
         if not client.account:
             return Response({"error": "Client has no associated account"}, status=400)
             
-        # Check sufficient balance
-        if client.account.current_balance < amount:
-            return Response({"error": "Insufficient account balance"}, status=400)
+        # We're allowing credit payments (negative balance), but we'll include
+        # a flag in the response to indicate if this is a credit payment
+        is_credit_payment = client.account.current_balance < amount
             
         # Process payment using transaction to ensure atomicity
         with transaction.atomic():
@@ -994,6 +1084,14 @@ class SaleViewSet(viewsets.ModelViewSet):
             sale_payments = CashReceipt.objects.filter(sale=sale).aggregate(Sum('amount'))['amount__sum'] or 0
             sale_account_payments = AccountPayment.objects.filter(sale=sale).aggregate(Sum('amount'))['amount__sum'] or 0
             total_paid = sale_payments + sale_account_payments
+            remaining_amount = max(0, sale_total - total_paid)
+            
+            print(f"DEBUG: Sale ID: {sale.id}, Total: {sale_total}, Paid: {total_paid}, Remaining: {remaining_amount}")
+            print(f"DEBUG: Before update - Payment status: {sale.payment_status}, Workflow state: {sale.workflow_state}, Status: {sale.status}")
+            
+            # Update the paid_amount and remaining_amount fields
+            sale.paid_amount = total_paid
+            sale.remaining_amount = remaining_amount
             
             if total_paid >= sale_total:
                 sale.payment_status = 'paid'
@@ -1004,9 +1102,19 @@ class SaleViewSet(viewsets.ModelViewSet):
             elif total_paid > 0:
                 sale.payment_status = 'partially_paid'
                 sale.workflow_state = 'partially_paid'
-                # Don't update status field for partially_paid as it's not a valid status choice
+                # Update status field for partially_paid
+                if sale.status in ['payment_pending', 'draft']:
+                    sale.status = 'partially_paid'
+            
+            print(f"DEBUG: After update - Payment status: {sale.payment_status}, Workflow state: {sale.workflow_state}, Status: {sale.status}")
+            print(f"DEBUG: Paid amount: {sale.paid_amount}, Remaining amount: {sale.remaining_amount}")
             
             sale.save()
+            
+            # Verify the status was saved by re-fetching the sale
+            sale_check = Sale.objects.get(pk=sale.id)
+            print(f"DEBUG: After save - Payment status: {sale_check.payment_status}, Workflow state: {sale_check.workflow_state}, Status: {sale_check.status}")
+            print(f"DEBUG: After save - Paid amount: {sale_check.paid_amount}, Remaining amount: {sale_check.remaining_amount}")
             
             # 5. Create CashFlow record for reporting
             CashFlow.objects.create(
@@ -1034,10 +1142,134 @@ class SaleViewSet(viewsets.ModelViewSet):
                     "id": sale.id,
                     "reference": sale.reference,
                     "payment_status": sale.payment_status,
-                    "workflow_state": sale.workflow_state
+                    "workflow_state": sale.workflow_state,
+                    "status": sale.status,
+                    "total_amount": float(sale.total_amount),
+                    "paid_amount": float(total_paid),
+                    "remaining_amount": float(remaining_amount)
                 },
-                "client_balance": float(client.account.current_balance)
+                "client_balance": float(client.account.current_balance),
+                "is_credit_payment": is_credit_payment
             })
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        Safe deletion of sales - only allows deletion of 'pending' or 'cancelled' sales.
+        For 'pending' sales: No additional actions needed (no stock or payments involved).
+        For 'cancelled' sales: Stock and payment refunds were already handled during cancellation.
+        """
+        sale = self.get_object()
+        
+        # Check if sale can be safely deleted
+        if sale.status not in ['pending', 'cancelled']:
+            return Response(
+                {
+                    "error": "Sale deletion not allowed", 
+                    "message": f"Sales with status '{sale.get_status_display()}' cannot be deleted. Only 'pending' or 'cancelled' sales can be deleted."
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            with transaction.atomic():
+                deletion_summary = {
+                    "sale_reference": sale.reference,
+                    "client_name": sale.client.name,
+                    "total_amount": float(sale.total_amount),
+                    "status": sale.status,
+                    "deleted_at": timezone.now().isoformat(),
+                    "stock_restored": [],
+                    "payment_refunded": 0,
+                    "notes": []
+                }
+                
+                if sale.status == 'pending':
+                    # For pending sales, no stock or payment actions are needed
+                    deletion_summary["notes"].append("No stock or payment actions required for pending sale")
+                    
+                elif sale.status == 'cancelled':
+                    # For cancelled sales, stock and payments were already handled during cancellation
+                    deletion_summary["notes"].append("Stock restoration and payment refunds were already processed during sale cancellation")
+                    # Add information about what was already processed
+                    deletion_summary["paid_amount"] = float(sale.paid_amount or 0)
+                    if sale.paid_amount and sale.paid_amount > 0:
+                        deletion_summary["notes"].append(f"Payment refund of {sale.paid_amount} was already processed during cancellation")
+                
+                # Delete related records first (due to foreign key constraints)
+                # Delete cash receipts related to this sale
+                from .models import CashReceipt, AccountPayment
+                cash_receipts_count = CashReceipt.objects.filter(sale=sale).count()
+                account_payments_count = AccountPayment.objects.filter(sale=sale).count()
+                
+                CashReceipt.objects.filter(sale=sale).delete()
+                AccountPayment.objects.filter(sale=sale).delete()
+                
+                if cash_receipts_count > 0:
+                    deletion_summary["notes"].append(f"Deleted {cash_receipts_count} cash receipt(s)")
+                if account_payments_count > 0:
+                    deletion_summary["notes"].append(f"Deleted {account_payments_count} account payment(s)")
+                
+                # Delete sale items
+                items_count = sale.items.count()
+                sale.items.all().delete()
+                deletion_summary["notes"].append(f"Deleted {items_count} sale item(s)")
+                
+                # Finally delete the sale
+                sale.delete()
+                
+                return Response({
+                    "success": True,
+                    "message": f"Sale {sale.reference} has been safely deleted",
+                    "deletion_summary": deletion_summary
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            return Response(
+                {
+                    "error": "Failed to delete sale",
+                    "message": f"An error occurred while deleting the sale: {str(e)}"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=True, methods=['get'])
+    def can_delete(self, request, pk=None):
+        """
+        Check if a sale can be safely deleted and provide information about the deletion impact
+        """
+        sale = self.get_object()
+        
+        can_delete = sale.status in ['pending', 'cancelled']
+        
+        response_data = {
+            "can_delete": can_delete,
+            "sale_reference": sale.reference,
+            "current_status": sale.status,
+            "current_status_display": sale.get_status_display(),
+            "reason": "Sale can be deleted" if can_delete else f"Sales with status '{sale.get_status_display()}' cannot be deleted"
+        }
+        
+        if can_delete:
+            # Provide information about what will happen during deletion
+            if sale.status == 'pending':
+                response_data.update({
+                    "deletion_impact": "No additional actions required - sale is still pending",
+                    "will_restore_stock": False,
+                    "will_refund_payment": False,
+                    "has_payments": bool(sale.paid_amount and sale.paid_amount > 0),
+                    "notes": "Pending sales can be deleted without any stock or payment complications"
+                })
+            elif sale.status == 'cancelled':
+                response_data.update({
+                    "deletion_impact": "Stock restoration and payment refunds were already processed during cancellation",
+                    "will_restore_stock": False,  # Already done during cancellation
+                    "will_refund_payment": False,  # Already done during cancellation
+                    "has_payments": bool(sale.paid_amount and sale.paid_amount > 0),
+                    "paid_amount": float(sale.paid_amount or 0),
+                    "notes": "Cancelled sales can be safely deleted - all necessary cleanup was done during cancellation"
+                })
+        
+        return Response(response_data)
 
 # Production serializer and viewset
 class ProductionMaterialSerializer(serializers.ModelSerializer):
@@ -2004,13 +2236,30 @@ class QuoteViewSet(viewsets.ModelViewSet):
                 {"error": "This quote has already been converted to a sale"}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
+        
+        # Get the zone instance from the provided zone ID
+        zone_id = request.data.get('zone')
+        if not zone_id:
+            return Response(
+                {"error": "Zone is required to convert quote to sale"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            zone = Zone.objects.get(id=zone_id)
+        except Zone.DoesNotExist:
+            return Response(
+                {"error": "Invalid zone ID provided"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         # Create a new sale with data from the quote
         sale = Sale.objects.create(
             reference=f"S-{quote.reference}",
             client=quote.client,
-            zone=request.data.get('zone'),  # Zone must be provided
+            zone=zone,  # Use the Zone instance, not the ID
             date=timezone.now().date(),
-            status='confirmed',
+            status='payment_pending',  # Set to payment_pending when sale is confirmed
             subtotal=quote.subtotal,
             discount_amount=0,  # Can be calculated from items if needed
             tax_amount=quote.tax_amount,
@@ -2031,10 +2280,11 @@ class QuoteViewSet(viewsets.ModelViewSet):
         # Update the quote status
         quote.status = 'accepted'
         quote.save()
-        return Response({
-            "message": "Quote successfully converted to sale",
-            "sale_id": sale.id
-        }, status=status.HTTP_201_CREATED)
+        
+        # Return the sale data that the frontend expects
+        from .serializers import SaleSerializer
+        sale_serializer = SaleSerializer(sale)
+        return Response(sale_serializer.data, status=status.HTTP_201_CREATED)
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
@@ -2264,7 +2514,7 @@ class ZoneViewSet(viewsets.ModelViewSet):
         # Filter by name
         name = self.request.query_params.get('name', None)
         if name:
-            queryset = queryset.filter(name__icontains(name))
+            queryset = queryset.filter(name__icontains=name)
             
         # Filter by is_active
         is_active = self.request.query_params.get('is_active', None)
@@ -2495,7 +2745,7 @@ class ExpenseCategoryViewSet(viewsets.ModelViewSet):
         # Filter by name
         name = self.request.query_params.get('name', None)
         if name:
-            queryset = queryset.filter(name__icontains(name))
+            queryset = queryset.filter(name__icontains=name)
             
         # Filter by is_active
         is_active = self.request.query_params.get('is_active', None)
@@ -3160,9 +3410,9 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
                     date=receipt.date,
                     transaction_type='cash_receipt',
                     reference=receipt.reference,
-                    description=f"Paiement {receipt.reference}" + (f" - Vente {receipt.sale.reference}" if receipt.sale else ""),
-                    credit=amount,
-                    debit=0,
+                    description=f"Paiement client {receipt.reference}" + (f" - Vente {receipt.sale.reference}" if receipt.sale else ""),
+                    debit=amount,
+                    credit=0,
                     balance=client_account.current_balance
                 )
             
@@ -3178,8 +3428,6 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
                     sale.payment_status = 'paid'
                 elif total_payments > 0:
                     sale.payment_status = 'partially_paid'
-                else:
-                    sale.payment_status = 'unpaid'
                 
                 sale.save()
             
@@ -3234,11 +3482,8 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
             )
             
             # Mettre à jour le solde du compte de caisse et client
-            account.current_balance += float(amount)
-            account.save()
-            
-            client = sale.client
-            client_account = client.account if client else None
+            account_id = request.data.get('account')
+            account = Account.objects.get(id=account_id)
             
             # Mettre à jour le solde du compte de caisse
             if account:
@@ -3257,6 +3502,7 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
                 )
             
             # Mettre à jour le compte client si applicable
+            client_account = sale.client.account if sale.client and hasattr(sale.client, 'account') else None
             if client_account:
                 client_account.current_balance += float(amount)
                 client_account.save()
@@ -3384,20 +3630,19 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
         outstanding_sales = Sale.objects.filter(
             client=client, 
             payment_status__in=['unpaid', 'partially_paid']
-        ).order_by('-date')
+        ).exclude(status='pending').order_by('-date').order_by('-date')
         
         # Serialize sales with outstanding balance
         outstanding_sales_data = []
         for sale in outstanding_sales:
-            # Calculate how much has been paid for this sale
-            paid_amount = CashReceipt.objects.filter(sale=sale).aggregate(Sum('amount'))['amount__sum'] or 0
+            # Get paid amount from the sale object
             outstanding_sales_data.append({
                 'id': sale.id,
                 'reference': sale.reference,
                 'date': sale.date.strftime('%Y-%m-%d'),
                 'total_amount': float(sale.total_amount),
-                'paid_amount': float(paid_amount),
-                'balance': float(sale.total_amount) - float(paid_amount),
+                'paid_amount': float(sale.paid_amount),
+                'balance': float(sale.remaining_amount) if sale.remaining_amount is not None else float(sale.total_amount) - float(sale.paid_amount),
                 'payment_status': sale.payment_status
             })
         
