@@ -87,3 +87,6 @@ celerybeat.pid
 
 # Unit test / coverage reports
 .pytest_cache/
+
+# migrations
+gestion_app/migrations/

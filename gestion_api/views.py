@@ -14,18 +14,20 @@ from .models import (
     ClientPayment, SupplierPayment, AccountTransfer, CashFlow, BankReconciliation, FinancialReport, Stock, CashReceipt, AccountStatement, AccountPayment
 )
 from .serializers import (
-    ProductSerializer, ClientSerializer, UserProfileSerializer, 
+    ProductSerializer, ClientSerializer, SupplierSerializer, SaleSerializer, SaleItemSerializer, UserProfileSerializer, 
     PermissionSerializer, GroupSerializer, ZoneSerializer,
     CurrencySerializer, ExchangeRateSerializer, PaymentMethodSerializer,
     AccountSerializer, PriceGroupSerializer, ExpenseCategorySerializer,
     ExpenseSerializer, ClientPaymentSerializer, SupplierPaymentSerializer,
     AccountTransferSerializer, CashFlowSerializer, BankReconciliationSerializer,
-    FinancialReportSerializer, ProductCategorySerializer, UnitOfMeasureSerializer
+    FinancialReportSerializer, ProductCategorySerializer, UnitOfMeasureSerializer,
+    ProductionSerializer, ProductionMaterialSerializer, StockSupplySerializer, StockSupplyItemSerializer,
+    StockTransferSerializer, StockTransferItemSerializer, InventorySerializer, InventoryItemSerializer
 )
 from rest_framework import serializers
 from django.db.models import Sum, Count, Q, F # Add F expression
 from django.db import transaction
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from django.utils import timezone
 from django.core.exceptions import ObjectDoesNotExist
 from decimal import Decimal
@@ -99,7 +101,65 @@ def dashboard_stats(request):
     if request.method == 'OPTIONS':
         return options_response(request)
     
-    total_sales = Sale.objects.count()
+    # Get query parameters
+    period = request.query_params.get('period', 'year')
+    start_date_param = request.query_params.get('start_date')
+    end_date_param = request.query_params.get('end_date')
+    
+    # Set default date range based on period
+    today = datetime.now().date()
+    if period == 'month':
+        start_date = datetime(today.year, today.month, 1).date()
+        end_date = today
+    elif period == 'quarter':
+        current_quarter = (today.month - 1) // 3 + 1
+        start_date = datetime(today.year, 3 * current_quarter - 2, 1).date()
+        if current_quarter < 4:
+            next_quarter_start = datetime(today.year, 3 * (current_quarter + 1) - 2, 1).date()
+            end_date = next_quarter_start - timedelta(days=1)
+        else:
+            end_date = datetime(today.year, 12, 31).date()
+    elif period == 'semester':
+        # First semester: Jan-Jun, Second semester: Jul-Dec
+        current_semester = 1 if today.month <= 6 else 2
+        if current_semester == 1:
+            start_date = datetime(today.year, 1, 1).date()
+            end_date = datetime(today.year, 6, 30).date()
+        else:
+            start_date = datetime(today.year, 7, 1).date()
+            end_date = datetime(today.year, 12, 31).date()
+    elif period == 'year':
+        start_date = datetime(today.year, 1, 1).date()
+        end_date = datetime(today.year, 12, 31).date()
+    elif period == 'custom':
+        try:
+            if not start_date_param or not end_date_param:
+                return Response(
+                    {"error": "Both start_date and end_date are required for custom period"},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            start_date = datetime.strptime(start_date_param, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_param, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return Response(
+                {"error": "Invalid date format. Use YYYY-MM-DD"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        # Default to current year if unknown period
+        start_date = datetime(today.year, 1, 1).date()
+        end_date = datetime(today.year, 12, 31).date()
+    
+    # Ensure start_date and end_date are always date objects
+    if not isinstance(start_date, date):
+        start_date = datetime(today.year, 1, 1).date()
+    if not isinstance(end_date, date):
+        end_date = datetime(today.year, 12, 31).date()
+    
+    # Apply date filters to sales
+    sales_queryset = Sale.objects.filter(date__gte=start_date, date__lte=end_date)
+    
+    total_sales = sales_queryset.count()
     total_clients = Client.objects.count()
     total_products = Product.objects.count()
     total_suppliers = Supplier.objects.count()
@@ -169,7 +229,61 @@ def inventory_dashboard(request):
     """
     Get inventory statistics for dashboard
     """
-    # Get total inventory value
+    # Get query parameters
+    period = request.query_params.get('period', 'year')
+    start_date_param = request.query_params.get('start_date')
+    end_date_param = request.query_params.get('end_date')
+    
+    # Set default date range based on period
+    today = datetime.now().date()
+    if period == 'month':
+        start_date = datetime(today.year, today.month, 1).date()
+        end_date = today
+    elif period == 'quarter':
+        current_quarter = (today.month - 1) // 3 + 1
+        start_date = datetime(today.year, 3 * current_quarter - 2, 1).date()
+        if current_quarter < 4:
+            next_quarter_start = datetime(today.year, 3 * (current_quarter + 1) - 2, 1).date()
+            end_date = next_quarter_start - timedelta(days=1)
+        else:
+            end_date = datetime(today.year, 12, 31).date()
+    elif period == 'semester':
+        # First semester: Jan-Jun, Second semester: Jul-Dec
+        current_semester = 1 if today.month <= 6 else 2
+        if current_semester == 1:
+            start_date = datetime(today.year, 1, 1).date()
+            end_date = datetime(today.year, 6, 30).date()
+        else:
+            start_date = datetime(today.year, 7, 1).date()
+            end_date = datetime(today.year, 12, 31).date()
+    elif period == 'year':
+        start_date = datetime(today.year, 1, 1).date()
+        end_date = datetime(today.year, 12, 31).date()
+    elif period == 'custom':
+        try:
+            if not start_date_param or not end_date_param:
+                # Default to last 30 days if custom dates not provided
+                start_date = today - timedelta(days=30)
+                end_date = today
+            else:
+                start_date = datetime.strptime(start_date_param, '%Y-%m-%d').date()
+                end_date = datetime.strptime(end_date_param, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            # Fall back to last 30 days if invalid dates
+            start_date = today - timedelta(days=30)
+            end_date = today
+    else:
+        # Default to current year if unknown period
+        start_date = datetime(today.year, 1, 1).date()
+        end_date = datetime(today.year, 12, 31).date()
+    
+    # Ensure start_date and end_date are always date objects
+    if not isinstance(start_date, date):
+        start_date = today - timedelta(days=30)
+    if not isinstance(end_date, date):
+        end_date = today
+    
+    # Get total inventory value (current stock)
     inventory_value = Stock.objects.annotate(
         value=F('quantity') * F('product__purchase_price')
     ).aggregate(total=Sum('value'))['total'] or 0
@@ -192,9 +306,28 @@ def inventory_dashboard(request):
         for stock in low_stock_products
     ]
     
-    # Get inventory movement statistics (last 30 days)
-    thirty_days_ago = timezone.now().date() - timedelta(days=30)
-    recent_movements = StockCard.objects.filter(date__gte=thirty_days_ago)
+    # Get stock value per product (top 20 by value)
+    product_stock_values = Stock.objects.select_related('product', 'zone', 'product__unit').annotate(
+        stock_value=F('quantity') * F('product__purchase_price')
+    ).filter(
+        quantity__gt=0  # Only products with stock
+    ).order_by('-stock_value')[:20]
+    
+    product_stock_data = [
+        {
+            'product_id': stock.product.id,
+            'product_name': stock.product.name,
+            'zone_name': stock.zone.name,
+            'quantity': stock.quantity,
+            'unit_price': float(stock.product.purchase_price),
+            'stock_value': float(stock.quantity * stock.product.purchase_price),
+            'unit_symbol': stock.product.unit.symbol if stock.product.unit else '',
+        }
+        for stock in product_stock_values
+    ]
+    
+    # Get inventory movement statistics with date filtering
+    recent_movements = StockCard.objects.filter(date__gte=start_date, date__lte=end_date)
     
     inflow = recent_movements.aggregate(total=Sum('quantity_in'))['total'] or 0
     outflow = recent_movements.aggregate(total=Sum('quantity_out'))['total'] or 0
@@ -232,6 +365,7 @@ def inventory_dashboard(request):
     return Response({
         'inventory_value': inventory_value,
         'low_stock_products': low_stock_data,
+        'product_stock_values': product_stock_data,
         'inflow': inflow,
         'outflow': outflow,
         'category_data': category_data,
@@ -248,8 +382,8 @@ def reports_sales(request):
     """
     # Get query parameters
     period = request.query_params.get('period', 'year')
-    start_date = request.query_params.get('start_date')
-    end_date = request.query_params.get('end_date')
+    start_date_param = request.query_params.get('start_date')
+    end_date_param = request.query_params.get('end_date')
     
     # Set default date range based on period
     today = datetime.now().date()
@@ -264,23 +398,42 @@ def reports_sales(request):
             end_date = next_quarter_start - timedelta(days=1)
         else:
             end_date = datetime(today.year, 12, 31).date()
+    elif period == 'semester':
+        # First semester: Jan-Jun, Second semester: Jul-Dec
+        current_semester = 1 if today.month <= 6 else 2
+        if current_semester == 1:
+            start_date = datetime(today.year, 1, 1).date()
+            end_date = datetime(today.year, 6, 30).date()
+        else:
+            start_date = datetime(today.year, 7, 1).date()
+            end_date = datetime(today.year, 12, 31).date()
     elif period == 'year':
         start_date = datetime(today.year, 1, 1).date()
         end_date = datetime(today.year, 12, 31).date()
     elif period == 'custom':
         try:
-            if not start_date or not end_date:
+            if not start_date_param or not end_date_param:
                 return Response(
                     {"error": "Both start_date and end_date are required for custom period"},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
-            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+            start_date = datetime.strptime(start_date_param, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_param, '%Y-%m-%d').date()
         except (ValueError, TypeError):
             return Response(
                 {"error": "Invalid date format. Use YYYY-MM-DD"},
                 status=status.HTTP_400_BAD_REQUEST
             )
+    else:
+        # Default to current year if unknown period
+        start_date = datetime(today.year, 1, 1).date()
+        end_date = datetime(today.year, 12, 31).date()
+    
+    # Ensure start_date and end_date are always date objects
+    if not isinstance(start_date, date):
+        start_date = datetime(today.year, 1, 1).date()
+    if not isinstance(end_date, date):
+        end_date = datetime(today.year, 12, 31).date()
     
     # Generate monthly sales data
     monthly_data = []
@@ -580,17 +733,6 @@ class GroupViewSet(viewsets.ModelViewSet):
         return Response(data, status=status.HTTP_200_OK)
 
 
-class ProductSerializer(serializers.ModelSerializer):
-    category_name = serializers.SerializerMethodField()
-    
-    class Meta:
-        model = Product
-        fields = ['id', 'name', 'reference', 'category', 'category_name', 'unit', 'purchase_price', 
-                  'selling_price', 'description', 'is_raw_material', 'is_active']
-    
-    def get_category_name(self, obj):
-        return obj.category.name if obj.category else None
-
 class ProductViewSet(viewsets.ModelViewSet):
     """
     API endpoint for products
@@ -665,11 +807,6 @@ class ProductViewSet(viewsets.ModelViewSet):
         return HttpResponse(buffer, content_type="image/png")
 
 # Zone serializer and viewset
-class ZoneSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Zone
-        fields = ['id', 'name', 'address', 'description', 'is_active']
-
 class ZoneViewSet(viewsets.ModelViewSet):
     """
     API endpoint for zones
@@ -679,12 +816,6 @@ class ZoneViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, HasGroupPermission]
 
 # Client serializer and viewset
-class ClientSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Client
-        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
-                  'price_group', 'account', 'is_active']
-
 class ClientViewSet(viewsets.ModelViewSet):
     """
     API endpoint for clients
@@ -714,12 +845,6 @@ class ClientViewSet(viewsets.ModelViewSet):
         return super().destroy(request, *args, **kwargs)
 
 # Supplier serializer and viewset
-class SupplierSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Supplier
-        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
-                  'account', 'is_active']
-
 class SupplierViewSet(viewsets.ModelViewSet):
     """
     API endpoint for suppliers
@@ -729,61 +854,6 @@ class SupplierViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated, HasGroupPermission]
 
 # Sale serializer and viewset
-class SaleItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source='product.name', read_only=True)
-
-    class Meta:
-        model = SaleItem
-        fields = ['id', 'sale', 'product', 'product_name', 'quantity', 'unit_price', 'discount_percentage', 'total_price']
-        read_only_fields = ['id']
-        extra_kwargs = {'sale': {'required': False}}  # Make sale field not required
-
-class SaleSerializer(serializers.ModelSerializer):
-    items = SaleItemSerializer(many=True)
-    # Make reference field optional
-    reference = serializers.CharField(required=False)
-
-    class Meta:
-        model = Sale
-        fields = ['id', 'reference', 'client', 'zone', 'date', 'status', 'payment_status', 'workflow_state',
-                  'subtotal', 'discount_amount', 'tax_amount', 'total_amount', 'paid_amount', 'remaining_amount',
-                  'notes', 'created_by', 'items']
-
-    def create(self, validated_data):
-        items_data = validated_data.pop('items')
-        sale = Sale.objects.create(**validated_data)
-        # Create SaleItem records
-        for item_data in items_data:
-            SaleItem.objects.create(sale=sale, **item_data)
-        return sale
-
-    def update(self, instance, validated_data):
-        items_data = validated_data.pop('items', [])
-        # Update the sale instance
-        instance = super().update(instance, validated_data)
-        # Update or create SaleItem records
-        existing_items = {item.id: item for item in instance.items.all()}
-        # Process each item in the update data
-        for item_data in items_data:
-            item_id = item_data.get('id')
-            if item_id and item_id in existing_items:
-                # Update existing item
-                item = existing_items[item_id]
-                for attr, value in item_data.items():
-                    setattr(item, attr, value)
-                item.save()
-                existing_items.pop(item_id)
-            else:
-                # Create new item
-                # Remove 'sale' field from item_data if it exists to prevent duplicate key
-                if 'sale' in item_data:
-                    item_data.pop('sale')
-                SaleItem.objects.create(sale=instance, **item_data)
-        # Delete items not included in the update
-        for item in existing_items.values():
-            item.delete()
-        return instance
-
 class SaleViewSet(viewsets.ModelViewSet):
     """
     API endpoint for sales
@@ -1272,17 +1342,6 @@ class SaleViewSet(viewsets.ModelViewSet):
         return Response(response_data)
 
 # Production serializer and viewset
-class ProductionMaterialSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProductionMaterial
-        fields = ['id', 'production', 'product', 'quantity']
-
-class ProductionSerializer(serializers.ModelSerializer):
-    materials = ProductionMaterialSerializer(many=True, read_only=True, source='productionmaterial_set')
-    class Meta:
-        model = Production
-        fields = ['id', 'reference', 'product', 'quantity', 'zone', 'date', 'notes', 'materials']
-
 class ProductionViewSet(viewsets.ModelViewSet):
     """
     API endpoint for Production operations
@@ -1420,83 +1479,6 @@ class ProductionViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 # Serializers et viewsets pour les modèles de Stock
-class StockSupplyItemSerializer(serializers.ModelSerializer):
-    product_name = serializers.CharField(source='product.name', read_only=True) # Add product name
-
-    class Meta:
-        model = StockSupplyItem
-        # Ensure received_quantity is included if used for partial updates later
-        fields = ['id', 'supply', 'product', 'product_name', 'quantity', 'received_quantity', 'unit_price', 'total_price']
-        read_only_fields = ['id', 'product_name'] # Add product_name here
-        extra_kwargs = {'supply': {'required': False}} # Keep this
-
-class StockSupplySerializer(serializers.ModelSerializer):
-    # Use the updated StockSupplyItemSerializer
-    items = StockSupplyItemSerializer(many=True)
-    supplier_name = serializers.CharField(source='supplier.name', read_only=True) # Add supplier name
-    zone_name = serializers.CharField(source='zone.name', read_only=True) # Add zone name
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True) # Add creator name
-
-    class Meta:
-        model = StockSupply
-        fields = ['id', 'reference', 'supplier', 'supplier_name', 'zone', 'zone_name', 'date',
-                  'status', 'notes', 'created_by', 'created_by_name', 'items']
-        read_only_fields = ['id', 'supplier_name', 'zone_name', 'created_by_name'] # Add read-only fields
-
-    def create(self, validated_data):
-        items_data = validated_data.pop('items')
-        supply = StockSupply.objects.create(**validated_data)
-        for item_data in items_data:
-            # Ensure received_quantity defaults correctly if needed
-            StockSupplyItem.objects.create(supply=supply, **item_data)
-        return supply
-
-    def update(self, instance, validated_data):
-        items_data = validated_data.pop('items', [])
-        instance = super().update(instance, validated_data)
-
-        # Keep track of item IDs present in the update
-        updated_item_ids = set()
-
-        for item_data in items_data:
-            item_id = item_data.get('id')
-            if item_id:
-                # Update existing item
-                try:
-                    item_instance = StockSupplyItem.objects.get(id=item_id, supply=instance)
-                    # Update item fields (excluding supply)
-                    item_serializer = StockSupplyItemSerializer(item_instance, data=item_data, partial=True)
-                    if item_serializer.is_valid():
-                        item_serializer.save()
-                        updated_item_ids.add(item_id)
-                    else:
-                        # Handle validation error if necessary
-                        print(f"Error updating item {item_id}: {item_serializer.errors}")
-                except StockSupplyItem.DoesNotExist:
-                    # Handle case where item ID is provided but doesn't exist or belong to this supply
-                    pass
-            else:
-                # Create new item
-                # Ensure received_quantity defaults correctly if needed
-                StockSupplyItem.objects.create(supply=instance, **item_data)
-                # Assuming new items are implicitly part of the update
-                # No ID to add to updated_item_ids yet
-
-        # Delete items associated with the supply that were not in the update request
-        # This assumes the request sends the *full* list of items for the update
-        existing_items = instance.items.all()
-        for item in existing_items:
-            if item.id not in updated_item_ids and item.id is not None: # Check if item has an ID before trying to delete
-                 # Check if the item was newly created in this update (has no ID yet)
-                 # This logic might need refinement depending on how new items are handled
-                 is_newly_created = not any(i.get('id') == item.id for i in items_data if i.get('id'))
-                 if not is_newly_created: # Only delete if it's not a newly created item without an ID yet
-                     item.delete()
-
-
-        instance.refresh_from_db() # Refresh to get updated items relationship
-        return instance
-
 class StockSupplyViewSet(viewsets.ModelViewSet):
     """
     API endpoint for stock supplies

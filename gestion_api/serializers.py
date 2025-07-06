@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User, Group, Permission
 from django.utils import timezone
 from .models import (
-    Product, Client, UserProfile, Zone, 
+    Product, Client, Supplier, UserProfile, Zone, 
     Sale, SaleItem, Currency, ExchangeRate, PaymentMethod, 
     Account, PriceGroup, ExpenseCategory, Expense,
     ClientPayment, SupplierPayment, AccountTransfer, UnitOfMeasure,
@@ -351,6 +351,67 @@ class ClientSerializer(serializers.ModelSerializer):
         model = Client
         fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
                   'price_group', 'account', 'is_active']
+
+class SupplierSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Supplier
+        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
+                  'account', 'is_active']
+
+class SaleItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = SaleItem
+        fields = ['id', 'sale', 'product', 'product_name', 'quantity', 'unit_price', 'discount_percentage', 'total_price']
+        read_only_fields = ['id']
+        extra_kwargs = {'sale': {'required': False}}  # Make sale field not required
+
+class SaleSerializer(serializers.ModelSerializer):
+    items = SaleItemSerializer(many=True)
+    # Make reference field optional
+    reference = serializers.CharField(required=False)
+
+    class Meta:
+        model = Sale
+        fields = ['id', 'reference', 'client', 'zone', 'date', 'status', 'payment_status', 'workflow_state',
+                  'subtotal', 'discount_amount', 'tax_amount', 'total_amount', 'paid_amount', 'remaining_amount',
+                  'notes', 'created_by', 'items']
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items')
+        sale = Sale.objects.create(**validated_data)
+        # Create SaleItem records
+        for item_data in items_data:
+            SaleItem.objects.create(sale=sale, **item_data)
+        return sale
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', [])
+        # Update the sale instance
+        instance = super().update(instance, validated_data)
+        # Update or create SaleItem records
+        existing_items = {item.id: item for item in instance.items.all()}
+        # Process each item in the update data
+        for item_data in items_data:
+            item_id = item_data.get('id')
+            if item_id and item_id in existing_items:
+                # Update existing item
+                item = existing_items[item_id]
+                for attr, value in item_data.items():
+                    setattr(item, attr, value)
+                item.save()
+                existing_items.pop(item_id)
+            else:
+                # Create new item
+                # Remove 'sale' field from item_data if it exists to prevent duplicate key
+                if 'sale' in item_data:
+                    item_data.pop('sale')
+                SaleItem.objects.create(sale=instance, **item_data)
+        # Delete items not included in the update
+        for item in existing_items.values():
+            item.delete()
+        return instance
 
 class CurrencySerializer(serializers.ModelSerializer):
     class Meta:
