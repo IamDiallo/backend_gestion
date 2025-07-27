@@ -2,12 +2,16 @@ from rest_framework import serializers
 from django.contrib.auth.models import User, Group, Permission
 from django.utils import timezone
 from .models import (
-    Product, Client, Supplier, UserProfile, Zone, 
-    Sale, SaleItem, Currency, ExchangeRate, PaymentMethod, 
-    Account, PriceGroup, ExpenseCategory, Expense,
-    ClientPayment, SupplierPayment, AccountTransfer, UnitOfMeasure,
-    CashFlow, BankReconciliation, BankReconciliationItem, FinancialReport, ProductCategory,
-    Production, ProductionMaterial, StockSupply, StockSupplyItem, StockTransfer, StockTransferItem, Inventory, InventoryItem
+    Product, Client, Supplier, UserProfile, Zone, Sale, SaleItem, 
+    Currency, ExchangeRate, PaymentMethod, Account, PriceGroup, 
+    ExpenseCategory, Expense, ClientPayment, SupplierPayment, 
+    AccountTransfer, UnitOfMeasure, CashFlow, BankReconciliation, 
+    BankReconciliationItem, FinancialReport, ProductCategory,
+    Production, ProductionMaterial, StockSupply, StockSupplyItem, 
+    StockTransfer, StockTransferItem, Inventory, InventoryItem,
+    StockCard, DeliveryNote, DeliveryNoteItem, ChargeType, SaleCharge,
+    Employee, ClientGroup, Invoice, Quote, QuoteItem, Stock,
+    CashReceipt, AccountStatement
 )
 
 class PasswordChangeSerializer(serializers.Serializer):
@@ -544,6 +548,8 @@ class ProductCategorySerializer(serializers.ModelSerializer):
 class UnitOfMeasureSerializer(serializers.ModelSerializer):
     class Meta:
         model = UnitOfMeasure
+        fields = ['id', 'name', 'symbol', 'created_at', 'updated_at', 'created_by']
+        read_only_fields = ['created_at', 'updated_at']
         fields = ['id', 'name', 'symbol']
 
 class ProductionMaterialSerializer(serializers.ModelSerializer):
@@ -576,6 +582,12 @@ class StockSupplyItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'supply', 'product', 'product_name', 'quantity', 'received_quantity', 'unit_price', 'total_price']
         read_only_fields = ['id', 'product_name'] # Add product_name here
         extra_kwargs = {'supply': {'required': False}} # Keep this
+
+    def to_representation(self, instance):
+        """Custom representation to ensure ID is always included"""
+        data = super().to_representation(instance)
+        print(f"[StockSupplyItem Serializer] Serializing item {instance.id}: {data}")
+        return data
 
 class StockSupplySerializer(serializers.ModelSerializer):
     supplier_name = serializers.SerializerMethodField()
@@ -641,24 +653,69 @@ class StockSupplySerializer(serializers.ModelSerializer):
 
         # Create items
         for item_data in items_data:
-            StockSupplyItem.objects.create(supply=supply, **item_data)
+            print(f"[StockSupply Create] Creating item: {item_data}")
+            created_item = StockSupplyItem.objects.create(supply=supply, **item_data)
+            print(f"[StockSupply Create] Created item with ID: {created_item.id}")
 
         return supply
         
     def update(self, instance, validated_data):
-        items_data = validated_data.pop('items', None)
+        items_data = validated_data.pop('items', [])
         
         # Update the supply fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
         
-        # Only update items if they are provided
-        if items_data is not None:
-            # Remove existing items and create new ones
-            instance.items.all().delete()
-            for item_data in items_data:
-                StockSupplyItem.objects.create(supply=instance, **item_data)
+        print(f"[StockSupply Update] Received {len(items_data)} items from frontend")
+        print(f"[StockSupply Update] Items data: {items_data}")
+        
+        # Get all existing items before any changes
+        existing_items = list(instance.items.all())
+        print(f"[StockSupply Update] Found {len(existing_items)} existing items in database")
+        
+        # Track which items were updated/created
+        processed_item_ids = set()
+        
+        for item_data in items_data:
+            item_id = item_data.get('id')
+            print(f"[StockSupply Update] Processing item: {item_data}")
+            
+            if item_id:
+                # Update existing item
+                try:
+                    item_instance = StockSupplyItem.objects.get(id=item_id, supply=instance)
+                    item_serializer = StockSupplyItemSerializer(item_instance, data=item_data, partial=True)
+                    if item_serializer.is_valid():
+                        item_serializer.save()
+                        processed_item_ids.add(item_id)
+                        print(f"[StockSupply Update] Updated existing item {item_id}")
+                    else:
+                        print(f"[StockSupply Update] Error updating supply item {item_id}: {item_serializer.errors}")
+                except StockSupplyItem.DoesNotExist:
+                    print(f"[StockSupply Update] Item {item_id} not found, will create new one")
+                    # Create new item if the ID doesn't exist
+                    new_item = StockSupplyItem.objects.create(supply=instance, **{k:v for k,v in item_data.items() if k != 'id'})
+                    processed_item_ids.add(new_item.id)
+            else:
+                # Create new item (no ID provided)
+                new_item = StockSupplyItem.objects.create(supply=instance, **item_data)
+                processed_item_ids.add(new_item.id)
+                print(f"[StockSupply Update] Created new item {new_item.id}")
+        
+        # Delete items that were not included in the update request
+        items_to_delete = []
+        for item in existing_items:
+            if item.id not in processed_item_ids:
+                items_to_delete.append(item.id)
+                item.delete()
+        
+        if items_to_delete:
+            print(f"[StockSupply Update] Deleted items: {items_to_delete}")
+        
+        instance.refresh_from_db()
+        final_items = list(instance.items.all())
+        print(f"[StockSupply Update] Final count: {len(final_items)} items")
         
         return instance
 
@@ -706,9 +763,18 @@ class StockTransferSerializer(serializers.ModelSerializer):
 
         # Keep track of item IDs present in the update
         updated_item_ids = set()
+        
+        print(f"[StockTransfer Update] Received {len(items_data)} items from frontend")
+        print(f"[StockTransfer Update] Items data: {items_data}")
+        
+        # Get all existing items before any changes
+        existing_items = list(instance.items.all())
+        print(f"[StockTransfer Update] Found {len(existing_items)} existing items in database")
 
         for item_data in items_data:
             item_id = item_data.get('id')
+            print(f"[StockTransfer Update] Processing item: {item_data}")
+            
             if item_id:
                 # Update existing item
                 try:
@@ -718,28 +784,34 @@ class StockTransferSerializer(serializers.ModelSerializer):
                     if item_serializer.is_valid():
                         item_serializer.save()
                         updated_item_ids.add(item_id)
+                        print(f"[StockTransfer Update] Updated existing item {item_id}")
                     else:
-                        # Handle validation error if necessary
-                        print(f"Error updating transfer item {item_id}: {item_serializer.errors}")
+                        print(f"[StockTransfer Update] Error updating transfer item {item_id}: {item_serializer.errors}")
                 except StockTransferItem.DoesNotExist:
-                    # Handle case where item ID is provided but doesn't exist or belong to this transfer
-                    pass
+                    print(f"[StockTransfer Update] Item {item_id} not found, will create new one")
+                    # Create new item if the ID doesn't exist
+                    new_item = StockTransferItem.objects.create(transfer=instance, **{k:v for k,v in item_data.items() if k != 'id'})
+                    updated_item_ids.add(new_item.id)
             else:
-                # Create new item
-                # Ensure transferred_quantity defaults correctly if needed
-                StockTransferItem.objects.create(transfer=instance, **item_data)
-                # Assuming new items are implicitly part of the update
+                # Create new item (no ID provided)
+                new_item = StockTransferItem.objects.create(transfer=instance, **item_data)
+                updated_item_ids.add(new_item.id)
+                print(f"[StockTransfer Update] Created new item {new_item.id}")
 
-        # Delete items associated with the transfer that were not in the update request
-        existing_items = instance.items.all()
+        # Delete items that were not included in the update request
+        items_to_delete = []
         for item in existing_items:
-            if item.id not in updated_item_ids and item.id is not None:
-                 # Check if the item was newly created in this update (has no ID yet)
-                 is_newly_created = not any(i.get('id') == item.id for i in items_data if i.get('id'))
-                 if not is_newly_created: # Only delete if it's not a newly created item without an ID yet
-                     item.delete()
+            if item.id not in updated_item_ids:
+                items_to_delete.append(item.id)
+                item.delete()
+        
+        if items_to_delete:
+            print(f"[StockTransfer Update] Deleted items: {items_to_delete}")
 
-        instance.refresh_from_db() # Refresh to get updated items relationship
+        instance.refresh_from_db()
+        final_items = list(instance.items.all())
+        print(f"[StockTransfer Update] Final count: {len(final_items)} items")
+        
         return instance
 
 class InventoryItemSerializer(serializers.ModelSerializer):
@@ -756,6 +828,11 @@ class InventoryItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'inventory', 'product', 'product_name', 'expected_quantity', 'actual_quantity', 'difference', 'notes']
         read_only_fields = ['id', 'product_name', 'difference']
         extra_kwargs = {'inventory': {'required': False}}
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        print(f"[InventoryItemSerializer] Serializing item with ID: {data.get('id')}")
+        return data
 
 class InventorySerializer(serializers.ModelSerializer):
     items = InventoryItemSerializer(many=True) # Allow writing items
@@ -811,25 +888,56 @@ class InventorySerializer(serializers.ModelSerializer):
             
             # If we still don't have actual_quantity, set a default of 0
             if 'actual_quantity' not in item_data:
-                print(f"Warning: No actual_quantity provided for item {item_data}")
+                print(f"[Inventory Create] Warning: No actual_quantity provided for item {item_data}")
                 item_data['actual_quantity'] = 0
+            
+            # Set expected_quantity to current stock level if not provided
+            if 'expected_quantity' not in item_data or item_data.get('expected_quantity', 0) == 0:
+                # Get current stock for this product in this zone
+                from .models import Stock
+                try:
+                    current_stock = Stock.objects.get(
+                        product_id=item_data['product'],
+                        zone=inventory.zone
+                    )
+                    item_data['expected_quantity'] = current_stock.quantity
+                    print(f"[Inventory Create] Set expected_quantity to current stock: {current_stock.quantity}")
+                except Stock.DoesNotExist:
+                    # If no stock record exists, expected quantity is 0
+                    item_data['expected_quantity'] = 0
+                    print(f"[Inventory Create] No stock record found, expected_quantity set to 0")
                 
             # Calculate difference before saving item
             expected = item_data.get('expected_quantity', 0)
             actual = item_data.get('actual_quantity', 0)
             item_data['difference'] = actual - expected
             
-            InventoryItem.objects.create(inventory=inventory, **item_data)
+            print(f"[Inventory Create] Creating item: {item_data}")
+            created_item = InventoryItem.objects.create(inventory=inventory, **item_data)
+            print(f"[Inventory Create] Created item with ID: {created_item.id}")
+        
+        # Create stock card entries if inventory is completed
+        self._create_stock_card_entries(inventory)
         
         return inventory
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
-        instance = super().update(instance, validated_data)
-
-        updated_item_ids = set()
         
-        print(f"Updating inventory with items: {items_data}")
+        # Update the inventory fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        print(f"[Inventory Update] Received {len(items_data)} items from frontend")
+        print(f"[Inventory Update] Items data: {items_data}")
+        
+        # Get all existing items before any changes
+        existing_items = list(instance.items.all())
+        print(f"[Inventory Update] Found {len(existing_items)} existing items in database")
+        
+        # Track which items were updated/created
+        processed_item_ids = set()
 
         for item_data in items_data:
             # Handle both field name formats (counted_quantity and actual_quantity)
@@ -839,37 +947,261 @@ class InventorySerializer(serializers.ModelSerializer):
             
             # If we still don't have actual_quantity, set a default of 0
             if 'actual_quantity' not in item_data:
-                print(f"Warning: No actual_quantity provided for item {item_data}")
+                print(f"[Inventory Update] Warning: No actual_quantity provided for item {item_data}")
                 item_data['actual_quantity'] = 0
             
+            # Set expected_quantity to current stock level if not provided (for new items)
+            if ('expected_quantity' not in item_data or item_data.get('expected_quantity', 0) == 0) and not item_data.get('id'):
+                # Only set expected_quantity for new items (no ID)
+                from .models import Stock
+                try:
+                    current_stock = Stock.objects.get(
+                        product_id=item_data['product'],
+                        zone=instance.zone
+                    )
+                    item_data['expected_quantity'] = current_stock.quantity
+                    print(f"[Inventory Update] Set expected_quantity for new item to current stock: {current_stock.quantity}")
+                except Stock.DoesNotExist:
+                    item_data['expected_quantity'] = 0
+                    print(f"[Inventory Update] No stock record found for new item, expected_quantity set to 0")
+            
             item_id = item_data.get('id')
+            
+            # For existing items, preserve expected_quantity if not provided
+            if item_id and ('expected_quantity' not in item_data or item_data.get('expected_quantity') is None):
+                try:
+                    existing_item = InventoryItem.objects.get(id=item_id, inventory=instance)
+                    item_data['expected_quantity'] = existing_item.expected_quantity
+                    print(f"[Inventory Update] Preserved existing expected_quantity: {existing_item.expected_quantity}")
+                except InventoryItem.DoesNotExist:
+                    print(f"[Inventory Update] Existing item {item_id} not found")
+            
             # Recalculate difference on update
-            expected = item_data.get('expected_quantity', 0) # Or fetch existing if not provided
+            expected = item_data.get('expected_quantity', 0)
             actual = item_data.get('actual_quantity', 0)
             item_data['difference'] = actual - expected
+            
+            print(f"[Inventory Update] Processing item: {item_data}")
 
             if item_id:
+                # Update existing item
                 try:
                     item_instance = InventoryItem.objects.get(id=item_id, inventory=instance)
                     item_serializer = InventoryItemSerializer(item_instance, data=item_data, partial=True)
                     if item_serializer.is_valid():
                         item_serializer.save()
-                        updated_item_ids.add(item_id)
+                        processed_item_ids.add(item_id)
+                        print(f"[Inventory Update] Updated existing item {item_id}")
                     else:
-                        print(f"Error updating inventory item {item_id}: {item_serializer.errors}")
+                        print(f"[Inventory Update] Error updating inventory item {item_id}: {item_serializer.errors}")
                 except InventoryItem.DoesNotExist:
-                    pass # Ignore invalid item IDs
+                    print(f"[Inventory Update] Item {item_id} not found, will create new one")
+                    # Create new item if the ID doesn't exist
+                    new_item = InventoryItem.objects.create(inventory=instance, **{k:v for k,v in item_data.items() if k != 'id'})
+                    processed_item_ids.add(new_item.id)
             else:
-                # Create new item
-                InventoryItem.objects.create(inventory=instance, **item_data)
-
-        # Delete items not in the update request
-        existing_items = instance.items.all()
+                # Create new item (no ID provided)
+                new_item = InventoryItem.objects.create(inventory=instance, **item_data)
+                processed_item_ids.add(new_item.id)
+                print(f"[Inventory Update] Created new item {new_item.id}")
+        
+        # Delete items that were not included in the update request
+        items_to_delete = []
         for item in existing_items:
-            if item.id not in updated_item_ids and item.id is not None:
-                is_newly_created = not any(i.get('id') == item.id for i in items_data if i.get('id'))
-                if not is_newly_created:
-                    item.delete()
-
+            if item.id not in processed_item_ids:
+                items_to_delete.append(item.id)
+                item.delete()
+        
+        if items_to_delete:
+            print(f"[Inventory Update] Deleted items: {items_to_delete}")
+        
         instance.refresh_from_db()
+        final_items = list(instance.items.all())
+        print(f"[Inventory Update] Final count: {len(final_items)} items")
+        
+        # Create stock card entries if inventory status changed to completed
+        self._create_stock_card_entries(instance)
+        
         return instance
+
+    def _create_stock_card_entries(self, inventory):
+        """Create stock card entries for completed inventory adjustments"""
+        if inventory.status != 'completed':
+            return
+            
+        from .models import StockCard, Stock
+        from django.db import transaction
+        
+        print(f"[Inventory] Creating stock card entries for inventory {inventory.reference}")
+        
+        # Check if stock card entries already exist for this inventory to avoid duplicates
+        existing_entries = StockCard.objects.filter(
+            transaction_type='inventory',
+            reference=inventory.reference
+        ).exists()
+        
+        if existing_entries:
+            print(f"[Inventory] Stock card entries already exist for {inventory.reference}, skipping creation")
+            return
+        
+        with transaction.atomic():
+            for item in inventory.items.all():
+                # Get or create stock entry for this product/zone
+                stock, created = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=inventory.zone,
+                    defaults={'quantity': 0}
+                )
+                
+                # Store the original stock quantity before adjustment
+                original_stock_quantity = stock.quantity
+                
+                # Calculate the new balance after adjustment
+                new_balance = item.actual_quantity  # Set stock to actual counted quantity
+                
+                # Always create a stock card entry for inventory, even if difference is 0
+                # This provides transparency about what was counted vs what was expected
+                if item.difference != 0:
+                    # For adjustments, show the adjustment amount
+                    stock_card = StockCard.objects.create(
+                        product=item.product,
+                        zone=inventory.zone,
+                        date=inventory.date,
+                        transaction_type='inventory',
+                        reference=inventory.reference,
+                        quantity_in=item.difference if item.difference > 0 else 0,
+                        quantity_out=abs(item.difference) if item.difference < 0 else 0,
+                        unit_price=item.product.purchase_price or 0,
+                        balance=new_balance,
+                        notes=f"Inventaire: Stock système {original_stock_quantity}, comptage {item.actual_quantity}, ajustement {item.difference:+} (attendu: {item.expected_quantity})"
+                    )
+                else:
+                    # For no difference, create an entry showing the confirmation
+                    stock_card = StockCard.objects.create(
+                        product=item.product,
+                        zone=inventory.zone,
+                        date=inventory.date,
+                        transaction_type='inventory',
+                        reference=inventory.reference,
+                        quantity_in=0,
+                        quantity_out=0,
+                        unit_price=item.product.purchase_price or 0,
+                        balance=new_balance,
+                        notes=f"Inventaire confirmé: Stock système {original_stock_quantity}, comptage {item.actual_quantity} (attendu: {item.expected_quantity})"
+                    )
+                
+                # Update the stock quantity to the actual counted amount
+                stock.quantity = new_balance
+                stock.save()
+                
+                print(f"[Inventory] Created stock card entry for {item.product.name}: original={original_stock_quantity}, counted={item.actual_quantity}, difference={item.difference}, new_balance={new_balance}")
+
+
+class StockCardSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    zone_name = serializers.CharField(source='zone.name', read_only=True)
+    unit_symbol = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockCard
+        fields = ['id', 'product', 'product_name', 'zone', 'zone_name', 'date', 'transaction_type', 'reference',
+                  'quantity_in', 'quantity_out', 'unit_price', 'balance', 'unit_symbol', 'notes']
+
+    def get_unit_symbol(self, obj):
+        try:
+            if obj.product and obj.product.unit:
+                return obj.product.unit.symbol
+        except:
+            pass
+        return None
+
+class DeliveryNoteItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeliveryNoteItem
+        fields = '__all__'
+
+class DeliveryNoteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DeliveryNote
+        fields = '__all__'
+
+class ChargeTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ChargeType
+        fields = '__all__'
+
+class SaleChargeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SaleCharge
+        fields = '__all__'
+
+class EmployeeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Employee
+        fields = '__all__'
+
+class ClientGroupSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ClientGroup
+        fields = '__all__'
+
+class InvoiceSerializer(serializers.ModelSerializer):
+    client_name = serializers.SerializerMethodField()
+    sale_reference = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = '__all__'
+
+    def get_client_name(self, obj):
+        try:
+            return obj.sale.client.name if obj.sale and obj.sale.client else None
+        except:
+            return None
+
+    def get_sale_reference(self, obj):
+        try:
+            return obj.sale.reference if obj.sale else None
+        except:
+            return None
+
+class QuoteItemSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+
+    class Meta:
+        model = QuoteItem
+        fields = '__all__'
+
+class QuoteSerializer(serializers.ModelSerializer):
+    items = QuoteItemSerializer(many=True, read_only=True)
+    reference = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = Quote
+        fields = '__all__'
+        extra_kwargs = {
+            'reference': {'required': False, 'allow_blank': True}
+        }
+
+class StockSerializer(serializers.ModelSerializer):
+    product_name = serializers.CharField(source='product.name', read_only=True)
+    zone_name = serializers.CharField(source='zone.name', read_only=True)
+    category_name = serializers.CharField(source='product.category.name', read_only=True)
+    unit_name = serializers.CharField(source='product.unit.name', read_only=True)
+
+    class Meta:
+        model = Stock
+        fields = ['id', 'product', 'product_name', 'zone', 'zone_name', 'quantity', 
+                 'category_name', 'unit_name', 'updated_at']
+
+class CashReceiptSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CashReceipt
+        fields = '__all__'
+
+class AccountStatementSerializer(serializers.ModelSerializer):
+    transaction_type_display = serializers.CharField(source='get_transaction_type_display', read_only=True)
+    
+    class Meta:
+        model = AccountStatement
+        fields = '__all__'

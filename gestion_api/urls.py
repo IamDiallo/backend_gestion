@@ -46,7 +46,16 @@ router.register(r'cash-receipts', views.CashReceiptViewSet)
 router.register(r'account-statements', views.AccountStatementViewSet)  # Add AccountStatementViewSet
 
 urlpatterns = [
+    # Stock-specific endpoints MUST come before router.urls to avoid conflicts
+    path('stocks/check_availability/', views.StockAvailabilityView.as_view(), name='stock-availability-check'),
+    path('stocks/by_zone/<int:zone_id>/', views.StockViewSet.as_view({'get': 'by_zone'}), name='stocks-by-zone'),
+    
+    # Sales-specific endpoints
+    path('sales/recalculate_payment_amounts/', views.SaleViewSet.as_view({'post': 'recalculate_payment_amounts'}), name='sales-recalculate-payments'),
+    
+    # Include router URLs after specific endpoints
     path('', include(router.urls)),
+    
     path('dashboard/stats/', views.dashboard_stats),
     path('dashboard/recent-sales/', views.dashboard_recent_sales),
     path('dashboard/low-stock/', views.dashboard_low_stock),
@@ -56,12 +65,6 @@ urlpatterns = [
     path('users/<int:pk>/update_groups/', views.UserViewSet.as_view({'post': 'update_groups'})),
     # Update the permissions endpoint to use the renamed method user_permissions
     path('users/me/permissions/', views.UserViewSet.as_view({'get': 'user_permissions'})),
-    
-    # Fix stock availability check endpoint
-    path('stocks/check_availability/', views.StockAvailabilityView.as_view(), name='stock-availability-check'),
-    
-    # Add stocks by zone endpoint
-    path('stocks/by_zone/<int:zone_id>/', views.StockViewSet.as_view({'get': 'by_zone'}), name='stocks-by-zone'),
       # Groups endpoints
     path('groups/', include([
         path('', views.GroupViewSet.as_view({'get': 'list', 'post': 'create'}), name='group-list'),

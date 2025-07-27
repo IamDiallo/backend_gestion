@@ -1155,10 +1155,6 @@ class QuoteViewSet(viewsets.ModelViewSet):
     serializer_class = QuoteSerializer
     permission_classes = [IsAuthenticated]
 
-    def perform_create(self, serializer):
-        # Let the model's save method handle reference generation
-        serializer.save()
-
     @action(detail=True, methods=['post'])
     def convert_to_sale(self, request, pk=None):
         quote = self.get_object()

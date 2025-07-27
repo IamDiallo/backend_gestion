@@ -51,9 +51,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',  # Must be at the top
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
-    'corsheaders.middleware.CorsMiddleware',  # CORS middleware should be as high as possible
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -61,20 +61,37 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'gestion_api.middleware.ErrorHandlingMiddleware',
-    'gestion_api.middleware.PermissionMiddleware',  # Add our custom middleware
+    'gestion_api.middleware.PermissionMiddleware',
 ]
 
 
-CORS_ALLOW_ALL_ORIGINS = True  # Allow all origins for development
+# CORS Configuration
+CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only allow all origins in development
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-]
+
+if DEBUG:
+    # Development CORS settings - more permissive
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ]
+    CSRF_TRUSTED_ORIGINS = [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:3000", 
+        "http://127.0.0.1:5173",
+    ]
+else:
+    # Production CORS settings - more restrictive
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = [
+        "https://yourdomain.com",  # Replace with your actual domain
+    ]
+    CSRF_TRUSTED_ORIGINS = [
+        "https://yourdomain.com",  # Replace with your actual domain
+    ]
 
 
 
@@ -97,7 +114,12 @@ CORS_ALLOW_HEADERS = [
     'user-agent',
     'x-csrftoken',
     'x-requested-with',
+    'cache-control',
+    'pragma',
 ]
+
+# Preflight request handling
+CORS_PREFLIGHT_MAX_AGE = 86400  # 24 hours
 
 CORS_EXPOSE_HEADERS = ['*']
 
@@ -130,14 +152,18 @@ DATABASES = {
     )
 }
 
-# Security Settings - Development settings
+# Security Settings - Development vs Production
 if DEBUG:
+    # Development settings - more permissive for CORS
     SECURE_SSL_REDIRECT = False
     SESSION_COOKIE_SECURE = False
     CSRF_COOKIE_SECURE = False
     SECURE_HSTS_SECONDS = 0
     SECURE_HSTS_INCLUDE_SUBDOMAINS = False
     SECURE_HSTS_PRELOAD = False
+    X_FRAME_OPTIONS = 'SAMEORIGIN'  # More permissive for development
+    SECURE_BROWSER_XSS_FILTER = False  # Disable in development
+    SECURE_CONTENT_TYPE_NOSNIFF = False  # Disable in development
 else:
     # Production security settings
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -147,10 +173,9 @@ else:
     SECURE_HSTS_SECONDS = 31536000  # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
-
-X_FRAME_OPTIONS = 'DENY'
-SECURE_BROWSER_XSS_FILTER = True
-SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
 
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [

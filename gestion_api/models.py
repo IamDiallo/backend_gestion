@@ -22,7 +22,6 @@ class UserProfile(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
-    # Note: There is no direct group attribute here, groups are managed through the User model
     
     def __str__(self):
         return f"{self.user.username} - {self.role}"
@@ -220,10 +219,10 @@ class Product(models.Model):
     name = models.CharField(max_length=100)
     reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
     category = models.ForeignKey(ProductCategory, on_delete=models.SET_NULL, null=True, blank=True)
-    unit = models.ForeignKey(UnitOfMeasure, db_column='unit', on_delete=models.PROTECT, null=True) # Remove db_column='unit'
+    unit = models.ForeignKey(UnitOfMeasure, on_delete=models.PROTECT, null=True, db_column='unit')
     purchase_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     selling_price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    description = models.TextField(blank=True, null=True)  # Make description nullable again
+    description = models.TextField(blank=True, null=True)
     is_raw_material = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     min_stock_level = models.DecimalField(max_digits=10, decimal_places=2, default=0) 
@@ -236,7 +235,6 @@ class Product(models.Model):
 
     def save(self, *args, **kwargs):
         if not self.reference:
-            # Generate reference if not provided
             last_product = Product.objects.order_by('id').last()
             if last_product:
                 self.reference = f"PROD-{last_product.id + 1:04d}"
@@ -785,6 +783,7 @@ class CashReceipt(models.Model):
     client = models.ForeignKey(Client, on_delete=models.PROTECT, null=True, blank=True)
     date = models.DateField()
     amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
+    allocated_amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     description = models.TextField(default="")
     payment_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
@@ -1084,11 +1083,11 @@ class Invoice(models.Model):
     status = models.CharField(
         max_length=20, 
         choices=[
-            ('draft', 'Draft'),
-            ('sent', 'Sent'),
-            ('paid', 'Paid'),
-            ('overdue', 'Overdue'),
-            ('cancelled', 'Cancelled')
+            ('draft', 'Brouillon'),
+            ('sent', 'Envoyé'),
+            ('paid', 'Payé'),
+            ('overdue', 'En retard'),
+            ('cancelled', 'Annulé')
         ],
         default='draft'
     )
@@ -1111,20 +1110,57 @@ class Quote(models.Model):
     status = models.CharField(
         max_length=20, 
         choices=[
-            ('draft', 'Draft'),
-            ('sent', 'Sent'),
-            ('accepted', 'Accepted'),
-            ('rejected', 'Rejected'),
-            ('expired', 'Expired')
+            ('draft', 'Brouillon'),
+            ('sent', 'Envoyé'),
+            ('accepted', 'Accepté'),
+            ('rejected', 'Rejeté'),
+            ('expired', 'Expiré')
         ],
         default='draft'
     )
+    is_converted = models.BooleanField(default=False, help_text="Si ce devis a été converti en vente")
     subtotal = models.DecimalField(max_digits=15, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        # Only generate a reference if this is a new object (no ID yet) and reference is empty
+        if not self.pk and not self.reference:
+            from django.db import transaction
+            
+            # Use a transaction with select_for_update to prevent race conditions
+            with transaction.atomic():
+                # Get the current year
+                year = timezone.now().year
+                # Lock the table to prevent concurrent reference generation
+                last_quote = Quote.objects.filter(reference__startswith=f"DEV-{year}-").select_for_update().order_by('-reference').first()
+                
+                if last_quote:
+                    try:
+                        # Extract the number part and increment
+                        last_number = int(last_quote.reference.split('-')[-1])
+                        next_number = last_number + 1
+                    except (ValueError, IndexError):
+                        # If parsing fails, count all quotes for this year and add 1
+                        count = Quote.objects.filter(reference__startswith=f"DEV-{year}-").count()
+                        next_number = count + 1
+                else:
+                    # First quote of the year
+                    next_number = 1
+                
+                # Format the reference (ensure it's at least 3 digits)
+                self.reference = f"DEV-{year}-{next_number:03d}"
+                
+                # Double check that this reference isn't already used 
+                # (extra safety check)
+                while Quote.objects.filter(reference=self.reference).exists():
+                    next_number += 1
+                    self.reference = f"DEV-{year}-{next_number:03d}"
+        
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.reference
