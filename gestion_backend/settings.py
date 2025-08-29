@@ -146,8 +146,8 @@ WSGI_APPLICATION = 'gestion_backend.wsgi.application'
 # Database - use dj-database-url for easier configuration
 DATABASES = {
     'default': dj_database_url.config(
-        # default=env('DATABASE_URL', default=f"postgres://{env('DB_USER')}:{env('DB_PASSWORD')}@{env('DB_HOST')}:{env('DB_PORT')}/{env('DB_NAME')}"),
-        default=env("DATABASE_URL"),
+        default=env('DATABASE_URL', default=f"postgres://{env('DB_USER')}:{env('DB_PASSWORD')}@{env('DB_HOST')}:{env('DB_PORT')}/{env('DB_NAME')}"),
+        # default=env("DATABASE_URL"),
         conn_max_age=600,
         conn_health_checks=True,
     )

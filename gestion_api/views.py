@@ -947,6 +947,16 @@ class AccountViewSet(viewsets.ModelViewSet):
     serializer_class = AccountSerializer
     permission_classes = [IsAuthenticated]
 
+    @action(detail=False, methods=['get'])
+    def by_type(self, request):
+        """Get accounts filtered by type"""
+        account_type = request.query_params.get('type')
+        if not account_type:
+            return Response({'error': 'type parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+        accounts = self.queryset.filter(account_type=account_type)
+        serializer = self.get_serializer(accounts, many=True)
+        return Response(serializer.data)
+
 
 class PriceGroupViewSet(viewsets.ModelViewSet):
     """API endpoint for price groups"""
