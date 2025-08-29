@@ -657,29 +657,52 @@ class StockSupplySerializer(serializers.ModelSerializer):
             created_item = StockSupplyItem.objects.create(supply=supply, **item_data)
             print(f"[StockSupply Create] Created item with ID: {created_item.id}")
 
+        # Add stock update if status is 'received'
+        if supply.status == 'received':
+            from .models import Stock
+            for item in supply.items.all():
+                stock, created = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=supply.zone,
+                    defaults={'quantity': 0}
+                )
+                stock.quantity += item.received_quantity or item.quantity
+                stock.save()
+                print(f"[StockSupply Create] Updated stock for product {item.product.id} in zone {supply.zone.id}")
+
         return supply
         
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
+        status_before = instance.status
         
         # Update the supply fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
+
+        if status_before != 'received' and instance.status == 'received':
+            from .models import Stock
+            for item in instance.items.all():
+                stock, created = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=instance.zone,
+                    defaults={'quantity': 0}
+                )
+                stock.quantity += item.received_quantity or item.quantity
+                stock.save()
+
+        instance.refresh_from_db()
         
-        print(f"[StockSupply Update] Received {len(items_data)} items from frontend")
-        print(f"[StockSupply Update] Items data: {items_data}")
         
         # Get all existing items before any changes
         existing_items = list(instance.items.all())
-        print(f"[StockSupply Update] Found {len(existing_items)} existing items in database")
         
         # Track which items were updated/created
         processed_item_ids = set()
         
         for item_data in items_data:
             item_id = item_data.get('id')
-            print(f"[StockSupply Update] Processing item: {item_data}")
             
             if item_id:
                 # Update existing item
@@ -753,13 +776,53 @@ class StockTransferSerializer(serializers.ModelSerializer):
             validated_data['reference'] = f'TRA-{datestr}-{count+1:04d}'
         transfer = StockTransfer.objects.create(**validated_data)
         for item_data in items_data:
-            # Ensure transferred_quantity defaults correctly if needed
             StockTransferItem.objects.create(transfer=transfer, **item_data)
+
+        # Update stock if status is 'completed'
+        if transfer.status == 'completed':
+            for item in transfer.items.all():
+                # Remove from source zone
+                stock_from, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=transfer.from_zone,
+                    defaults={'quantity': 0}
+                )
+                stock_from.quantity -= item.transferred_quantity or item.quantity
+                stock_from.save()
+                # Add to destination zone
+                stock_to, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=transfer.to_zone,
+                    defaults={'quantity': 0}
+                )
+                stock_to.quantity += item.transferred_quantity or item.quantity
+                stock_to.save()
         return transfer
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
+        status_before = instance.status
         instance = super().update(instance, validated_data)
+
+        if status_before != 'completed' and instance.status == 'completed':
+            from .models import Stock
+            for item in instance.items.all():
+                # Remove from source zone
+                stock_from, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=instance.from_zone,
+                    defaults={'quantity': 0}
+                )
+                stock_from.quantity -= item.transferred_quantity or item.quantity
+                stock_from.save()
+                # Add to destination zone
+                stock_to, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=instance.to_zone,
+                    defaults={'quantity': 0}
+                )
+                stock_to.quantity += item.transferred_quantity or item.quantity
+                stock_to.save()
 
         # Keep track of item IDs present in the update
         updated_item_ids = set()
