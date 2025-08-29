@@ -12,7 +12,7 @@ import dj_database_url
 # Initialize environ
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-3-84-250-165.compute-1.amazonaws.com']),
+    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-3-87-10-136.compute-1.amazonaws.com']),
     SECURE_SSL_REDIRECT=(bool, True),
     SESSION_COOKIE_SECURE=(bool, True),
     CSRF_COOKIE_SECURE=(bool, True),
@@ -262,12 +262,8 @@ AUTH_USER_MODEL = 'auth.User'
 # Authentication backends
 AUTHENTICATION_BACKENDS = [
     'django.contrib.auth.backends.ModelBackend',
-    # ...any other custom backends...
 ]
 
-# Logging Configuration
-import os
-from pathlib import Path
 
 # Create logs directory if it doesn't exist
 logs_dir = os.path.join(BASE_DIR, 'logs')
