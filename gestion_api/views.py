@@ -1197,7 +1197,7 @@ class QuoteViewSet(viewsets.ModelViewSet):
         
         # Create a new sale with data from the quote
         sale = Sale.objects.create(
-            reference=f"S-{quote.reference}",
+            reference=f"VNT-{quote.reference}",
             client=quote.client,
             zone=zone,  # Use the Zone instance, not the ID
             date=timezone.now().date(),

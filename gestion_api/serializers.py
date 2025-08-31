@@ -416,7 +416,29 @@ class SaleSerializer(serializers.ModelSerializer):
         for item in existing_items.values():
             item.delete()
         return instance
+    
+    def delete(self, *args, **kwargs):
+        sale = self.instance
 
+        # Restore stock for each sale item
+        from .models import Stock, CashReceipt
+        for item in sale.items.all():
+            stock, created = Stock.objects.get_or_create(
+                product=item.product,
+                zone=sale.zone,
+                defaults={'quantity': 0}
+            )
+            stock.quantity += item.quantity
+            stock.save()
+
+        # Refund amount logic (example: update account balance)
+        if sale.paid_amount > 0 and sale.client and sale.client.account:
+            account = sale.client.account
+            account.current_balance += sale.paid_amount
+            account.save()
+
+        # Delete the sale itself
+        sale.delete()
 class CurrencySerializer(serializers.ModelSerializer):
     class Meta:
         model = Currency
@@ -1216,6 +1238,26 @@ class InvoiceSerializer(serializers.ModelSerializer):
         model = Invoice
         fields = '__all__'
 
+    def create(self, validated_data):
+        sale = validated_data.get('sale')
+        if sale and isinstance(sale, int):
+            sale = Sale.objects.get(pk=sale)
+        if sale:
+            if sale.payment_status == 'paid':
+                validated_data['status'] = 'paid'
+                validated_data['paid_amount'] = sale.total_amount
+                validated_data['balance'] = 0
+            elif sale.payment_status == 'partially_paid':
+                validated_data['status'] = 'partially_paid'
+                validated_data['paid_amount'] = sale.paid_amount
+                validated_data['balance'] = sale.total_amount - sale.paid_amount
+            else:
+                validated_data['status'] = 'unpaid'
+                validated_data['paid_amount'] = 0
+                validated_data['balance'] = sale.total_amount
+        invoice = super().create(validated_data)
+        return invoice
+    
     def get_client_name(self, obj):
         try:
             return obj.sale.client.name if obj.sale and obj.sale.client else None

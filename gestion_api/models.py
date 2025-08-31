@@ -779,7 +779,7 @@ class CashReceipt(models.Model):
     """
     reference = models.CharField(max_length=20, unique=True)
     account = models.ForeignKey(Account, on_delete=models.PROTECT, null=True)
-    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, null=True, blank=True, related_name='receipts')
+    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, null=True, blank=True, related_name='receipts')
     client = models.ForeignKey(Client, on_delete=models.PROTECT, null=True, blank=True)
     date = models.DateField()
     amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
@@ -1077,7 +1077,7 @@ class StockCard(models.Model):
 
 class Invoice(models.Model):
     reference = models.CharField(max_length=50, unique=True)
-    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, related_name='invoices')
+    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='invoices')
     date = models.DateField()
     due_date = models.DateField()
     status = models.CharField(
@@ -1309,7 +1309,7 @@ class AccountPayment(models.Model):
     Payment using client account balance
     """
     client = models.ForeignKey(Client, on_delete=models.PROTECT)
-    sale = models.ForeignKey(Sale, on_delete=models.PROTECT, null=True)
+    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, null=True)
     amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
     date = models.DateField()
     reference = models.CharField(max_length=50)
