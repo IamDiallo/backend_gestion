@@ -765,17 +765,18 @@ class SaleViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def pay_from_account(self, request, pk=None):
-        """Process payment for a sale from client account"""
+        """Process payment for a sale from client account and credit company account"""
         sale = self.get_object()
         amount = Decimal(str(request.data.get('amount', 0)))
         description = request.data.get('description', f'Payment for sale {sale.reference}')
-        
+        company_account_id = request.data.get('company_account')
         if amount <= 0:
             return Response(
                 {'error': 'Payment amount must be greater than 0'}, 
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+        if not company_account_id:
+            return Response({'error': 'company_account parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             with transaction.atomic():
                 # Generate reference number
@@ -783,11 +784,25 @@ class SaleViewSet(viewsets.ModelViewSet):
                     date=timezone.now().date()
                 ).count()
                 reference = f"PAY-{timezone.now().strftime('%Y%m%d')}-{payment_count + 1:04d}"
-                
+                # Get the client's account
+                client_account = Account.objects.filter(account_type='client', name__icontains=sale.client.name).first()
+                if not client_account:
+                    return Response({'error': 'No account found for this client'}, status=status.HTTP_400_BAD_REQUEST)
+                # Get the company account
+                try:
+                    company_account = Account.objects.get(id=company_account_id)
+                except Account.DoesNotExist:
+                    return Response({'error': 'Company account not found'}, status=status.HTTP_400_BAD_REQUEST)
+                # Get last statement for client account
+                last_client_statement = AccountStatement.objects.filter(account=client_account).order_by('-date', '-id').first()
+                previous_client_balance = Decimal(str(last_client_statement.balance)) if last_client_statement else Decimal('0.00')
+                # Get last statement for company account
+                last_company_statement = AccountStatement.objects.filter(account=company_account).order_by('-date', '-id').first()
+                previous_company_balance = Decimal(str(last_company_statement.balance)) if last_company_statement else Decimal('0.00')
                 # Create CashReceipt (payment record)
                 payment = CashReceipt.objects.create(
                     reference=reference,
-                    account_id=1,  # Default account - you may want to make this configurable
+                    account=company_account,
                     sale=sale,
                     client=sale.client,
                     date=timezone.now().date(),
@@ -796,59 +811,49 @@ class SaleViewSet(viewsets.ModelViewSet):
                     description=description,
                     created_by=request.user
                 )
-                
-                # Create AccountStatement entry for payment history
+                # Debit client account
+                new_client_balance = previous_client_balance - amount
                 AccountStatement.objects.create(
-                    account_id=1,  # Same account as the CashReceipt
+                    account=client_account,
                     date=timezone.now().date(),
-                    transaction_type='sale',  # This will show as "Vente" in the history
+                    transaction_type='sale',
                     reference=reference,
                     description=f"Paiement vente {sale.reference} - {sale.client.name}",
                     credit=0,
-                    debit=amount,  # Payment for sale is a debit (reduces client account balance)
-                    balance=0,  # Balance will be calculated by the system
+                    debit=amount,
+                    balance=new_client_balance,
                 )
-                
+                client_account.current_balance = new_client_balance
+                client_account.save(update_fields=['current_balance'])
+                # Credit company account
+                new_company_balance = previous_company_balance + amount
+                AccountStatement.objects.create(
+                    account=company_account,
+                    date=timezone.now().date(),
+                    transaction_type='sale',
+                    reference=reference,
+                    description=f"Paiement reçu de {sale.client.name} pour vente {sale.reference}",
+                    credit=amount,
+                    debit=0,
+                    balance=new_company_balance,
+                )
+                company_account.current_balance = new_company_balance
+                company_account.save(update_fields=['current_balance'])
                 # Update sale payment status and amounts
                 sale.refresh_from_db()
                 paid_amount = CashReceipt.objects.filter(sale=sale).aggregate(
                     total=Sum('allocated_amount')
                 )['total'] or Decimal('0')
-                
-                # Update the sale's paid_amount and remaining_amount fields
                 sale.paid_amount = paid_amount
                 sale.remaining_amount = sale.total_amount - paid_amount
-                
                 if paid_amount >= sale.total_amount:
                     sale.payment_status = 'paid'
                 elif paid_amount > 0:
                     sale.payment_status = 'partially_paid'
                 else:
                     sale.payment_status = 'unpaid'
-                
                 sale.save()
-                
-                # Calculate updated client balance
-                # Get client payments (traditional payments - money they put into account)
-                client_payments = ClientPayment.objects.filter(client=sale.client)
-                total_client_payments = client_payments.aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                
-                # Get cash deposits (money they deposited into account)
-                cash_deposits = CashReceipt.objects.filter(client=sale.client, sale__isnull=True)
-                total_cash_deposits = cash_deposits.aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                
-                # Calculate total money client has put into their account
-                total_account_credits = total_client_payments + total_cash_deposits
-                
-                # Get total payments they've made for sales from their account
-                sale_payments_from_account = CashReceipt.objects.filter(
-                    client=sale.client, 
-                    sale__isnull=False
-                ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
-                
-                # Client balance = money they deposited - money they spent on sales
-                client_balance = total_account_credits - sale_payments_from_account
-                
+                # Return the updated client and company balances
                 return Response({
                     'success': True,
                     'message': 'Payment processed successfully',
@@ -867,10 +872,10 @@ class SaleViewSet(viewsets.ModelViewSet):
                         'paid_amount': str(sale.paid_amount),
                         'remaining_amount': str(sale.remaining_amount)
                     },
-                    'client_balance': str(client_balance),
-                    'is_credit_payment': client_balance < 0
+                    'client_balance': float(client_account.current_balance),
+                    'company_balance': float(company_account.current_balance),
+                    'is_credit_payment': client_account.current_balance < 0
                 })
-                
         except Exception as e:
             return Response(
                 {'error': f'Error processing payment: {str(e)}'}, 
@@ -1268,11 +1273,15 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
         # Save the cash receipt
         cash_receipt = serializer.save(created_by=self.request.user)
         
-        # Create corresponding AccountStatement entry for transaction history
         try:
-            # Get the related client name for description
             client_name = cash_receipt.client.name if cash_receipt.client else 'Client non spécifié'
-            
+            # Get the last statement for this account
+            last_statement = AccountStatement.objects.filter(
+                account=cash_receipt.account
+            ).order_by('-date', '-id').first()
+            previous_balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
+            # Calculate new balance
+            new_balance = previous_balance + Decimal(str(cash_receipt.amount))
             # Create AccountStatement entry
             AccountStatement.objects.create(
                 account=cash_receipt.account,
@@ -1280,12 +1289,15 @@ class CashReceiptViewSet(viewsets.ModelViewSet):
                 reference=cash_receipt.reference,
                 transaction_type='cash_receipt',
                 description=f"Dépôt client: {client_name} - {cash_receipt.description}",
-                credit=cash_receipt.amount,  # Deposit is a credit (money coming in)
+                credit=cash_receipt.amount,
                 debit=0,
-                balance=0,  # Balance will be calculated by the system
+                balance=new_balance
             )
+            # Update the account's current_balance
+            account = cash_receipt.account
+            account.current_balance = new_balance
+            account.save(update_fields=['current_balance'])
         except Exception as e:
-            # Log the error but don't fail the cash receipt creation
             print(f"Error creating AccountStatement for CashReceipt {cash_receipt.id}: {e}")
 
 
@@ -1311,63 +1323,32 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
     def client_balance(self, request):
         """Get comprehensive client balance with statements and outstanding sales"""
         client_id = request.query_params.get('client_id')
-        
         if not client_id:
-            return Response({
-                'error': 'client_id parameter is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({'error': 'client_id parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            # Get the client
             client = Client.objects.get(id=client_id)
-            
-            # Calculate balance from account perspective (deposits vs withdrawals)
-            # Get all sales for this client
-            sales = Sale.objects.filter(client_id=client_id)
-            total_sales = sales.aggregate(total=Sum('total_amount'))['total'] or 0
-            
-            # Get client payments (traditional payments - money they put into account)
-            client_payments = ClientPayment.objects.filter(client_id=client_id)
-            total_client_payments = client_payments.aggregate(total=Sum('amount'))['total'] or 0
-            
-            # Get cash deposits (money they deposited into account - not linked to sales)
-            cash_deposits = CashReceipt.objects.filter(client_id=client_id, sale__isnull=True)
-            total_cash_deposits = cash_deposits.aggregate(total=Sum('amount'))['total'] or 0
-            
-            # Calculate total money client has put into their account
-            total_account_credits = total_client_payments + total_cash_deposits
-            
-            # Get total payments they've made for sales from their account
-            sale_payments_from_account = CashReceipt.objects.filter(
-                client_id=client_id, 
-                sale__isnull=False
-            ).aggregate(total=Sum('amount'))['total'] or 0
-            
-            # Client balance = money they deposited - money they spent on sales
-            # This represents how much credit they have left in their account
-            balance = total_account_credits - sale_payments_from_account
-            
-            # Get outstanding sales (unpaid or partially paid)
-            outstanding_sales = sales.exclude(payment_status='paid').values(
-                'id', 'reference', 'date', 'total_amount', 'paid_amount', 'payment_status'
-            ).annotate(
-                balance=F('total_amount') - F('paid_amount')
-            )
-            
-            # Get account statements for this client (transactions history)
-            # Get all cash receipts for reference lookup (both deposits and payments)
-            all_cash_receipts = CashReceipt.objects.filter(client_id=client_id)
-            
-            # Find statements by description containing client name or references to client payments/deposits
-            statements = AccountStatement.objects.filter(
-                Q(description__icontains=client.name) |
-                Q(reference__in=client_payments.values_list('reference', flat=True)) |
-                Q(reference__in=all_cash_receipts.values_list('reference', flat=True))
-            ).order_by('-date').values(
+            # Get the client's account
+            account = Account.objects.filter(account_type='client', name__icontains=client.name).first()
+            if not account:
+                return Response({'error': 'No account found for this client'}, status=404)
+            # Use only this account for statements and balance
+            statements = AccountStatement.objects.filter(account=account).order_by('-date', '-id').values(
                 'id', 'account_id', 'date', 'reference', 'transaction_type', 
                 'description', 'debit', 'credit', 'balance'
-            )[:50]  # Limit to last 50 transactions
-            
+            )[:50]
+            # The current balance is the last statement's balance
+            last_statement = AccountStatement.objects.filter(account=account).order_by('-date', '-id').first()
+            balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
+            # Get outstanding sales for the client
+            outstanding_sales = Sale.objects.filter(client=client, payment_status__in=['unpaid', 'partially_paid']).values(
+                'id', 'reference', 'date', 'total_amount', 'paid_amount', 'payment_status'
+            )
+            # Get total sales and payments for the client
+            total_sales = Sale.objects.filter(client=client).aggregate(total=Sum('total_amount'))['total'] or 0
+            total_account_credits = AccountStatement.objects.filter(account=account, credit__gt=0).aggregate(total=Sum('credit'))['total'] or 0
+            sale_payments_from_account = AccountStatement.objects.filter(account=account, transaction_type='client_payment', debit__gt=0).aggregate(total=Sum('debit'))['total'] or 0
+            sales_count = Sale.objects.filter(client=client).count()
+            payments_count = AccountStatement.objects.filter(account=account).count()
             # Add transaction_type_display for statements
             transaction_type_choices = {
                 'client_payment': 'Règlement client',
@@ -1381,33 +1362,27 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 'purchase': 'Achat',
                 'deposit': 'Dépôt'
             }
-            
             for statement in statements:
                 statement['transaction_type_display'] = transaction_type_choices.get(
                     statement['transaction_type'], statement['transaction_type']
                 )
-            
             return Response({
                 'client_id': client_id,
                 'client_name': client.name,
-                'total_sales': total_sales,
-                'total_account_credits': total_account_credits,
-                'sale_payments_from_account': sale_payments_from_account,
-                'balance': balance,
-                'sales_count': sales.count(),
-                'payments_count': client_payments.count() + all_cash_receipts.count(),
+                'account_id': account.id,
+                'total_sales': float(total_sales),
+                'total_account_credits': float(total_account_credits),
+                'sale_payments_from_account': float(sale_payments_from_account),
+                'balance': float(balance),
+                'sales_count': sales_count,
+                'payments_count': payments_count,
                 'outstanding_sales': list(outstanding_sales),
-                'statements': list(statements)
+                'statements': list(statements),
             })
-            
         except Client.DoesNotExist:
-            return Response({
-                'error': 'Client not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'Client not found'}, status=404)
         except Exception as e:
-            return Response({
-                'error': str(e)
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # Debug Views
