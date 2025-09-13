@@ -1327,28 +1327,39 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
             return Response({'error': 'client_id parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             client = Client.objects.get(id=client_id)
-            # Get the client's account
-            account = Account.objects.filter(account_type='client', name__icontains=client.name).first()
-            if not account:
+            
+            # Ensure client has an account
+            if not client.account:
                 return Response({'error': 'No account found for this client'}, status=404)
+
+            account = client.account
+
             # Use only this account for statements and balance
             statements = AccountStatement.objects.filter(account=account).order_by('-date', '-id').values(
                 'id', 'account_id', 'date', 'reference', 'transaction_type', 
                 'description', 'debit', 'credit', 'balance'
             )[:50]
+
             # The current balance is the last statement's balance
             last_statement = AccountStatement.objects.filter(account=account).order_by('-date', '-id').first()
             balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
+
             # Get outstanding sales for the client
-            outstanding_sales = Sale.objects.filter(client=client, payment_status__in=['unpaid', 'partially_paid']).values(
+            outstanding_sales = Sale.objects.filter(
+                client=client, 
+                payment_status__in=['unpaid', 'partially_paid']
+            ).values(
                 'id', 'reference', 'date', 'total_amount', 'paid_amount', 'payment_status'
             )
+
             # Get total sales and payments for the client
             total_sales = Sale.objects.filter(client=client).aggregate(total=Sum('total_amount'))['total'] or 0
             total_account_credits = AccountStatement.objects.filter(account=account, credit__gt=0).aggregate(total=Sum('credit'))['total'] or 0
             sale_payments_from_account = AccountStatement.objects.filter(account=account, transaction_type='client_payment', debit__gt=0).aggregate(total=Sum('debit'))['total'] or 0
+
             sales_count = Sale.objects.filter(client=client).count()
             payments_count = AccountStatement.objects.filter(account=account).count()
+
             # Add transaction_type_display for statements
             transaction_type_choices = {
                 'client_payment': 'Règlement client',
@@ -1366,6 +1377,7 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 statement['transaction_type_display'] = transaction_type_choices.get(
                     statement['transaction_type'], statement['transaction_type']
                 )
+
             return Response({
                 'client_id': client_id,
                 'client_name': client.name,
@@ -1379,8 +1391,10 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 'outstanding_sales': list(outstanding_sales),
                 'statements': list(statements),
             })
+
         except Client.DoesNotExist:
             return Response({'error': 'Client not found'}, status=404)
+
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
