@@ -785,7 +785,7 @@ class SaleViewSet(viewsets.ModelViewSet):
                 ).count()
                 reference = f"PAY-{timezone.now().strftime('%Y%m%d')}-{payment_count + 1:04d}"
                 # Get the client's account
-                client_account = Account.objects.filter(account_type='client', id=sale.client.id).first()
+                client_account = Account.objects.get(account_type='client', client=sale.client)
                 if not client_account:
                     return Response({'error': 'No account found for this client'}, status=status.HTTP_400_BAD_REQUEST)
                 # Get the company account
