@@ -383,12 +383,28 @@ class SaleSerializer(serializers.ModelSerializer):
                   'notes', 'created_by', 'items']
 
     def create(self, validated_data):
+
         items_data = validated_data.pop('items')
         sale = Sale.objects.create(**validated_data)
-        # Create SaleItem records
+
+        # Create SaleItem records and reduce stock
         for item_data in items_data:
-            SaleItem.objects.create(sale=sale, **item_data)
+            item = SaleItem.objects.create(sale=sale, **item_data)
+
+            stock, created = Stock.objects.get_or_create(
+                product=item.product,
+                zone=sale.zone,
+                defaults={'quantity': 0}
+            )
+
+            # Reduce stock (ensure it doesn’t go negative)
+            if stock.quantity < item.quantity:
+                raise ValueError(f"Not enough stock for product {item.product}")
+            stock.quantity -= item.quantity
+            stock.save()
+
         return sale
+
 
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
