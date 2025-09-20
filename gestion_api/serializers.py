@@ -350,12 +350,6 @@ class ProductSerializer(serializers.ModelSerializer):
         if request is not None:
             return request.build_absolute_uri(f'/api/products/{obj.id}/qr-code/')
 
-class ClientSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Client
-        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
-                  'price_group', 'account', 'is_active']
-
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
         model = Supplier
@@ -482,6 +476,12 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'account_type', 'currency', 'currency_details', 
                  'initial_balance', 'current_balance', 'description', 'is_active']
 
+class ClientSerializer(serializers.ModelSerializer):
+    # account = AccountSerializer(read_only=True)
+    class Meta:
+        model = Client
+        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 
+                  'price_group', 'account', 'is_active']
 class PriceGroupSerializer(serializers.ModelSerializer):
     class Meta:
         model = PriceGroup
