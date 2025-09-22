@@ -13,7 +13,9 @@ from .models import (
     Employee, ClientGroup, Invoice, Quote, QuoteItem, Stock,
     CashReceipt, AccountStatement
 )
-
+from decimal import Decimal
+from django.db.models import Max
+from django.db import transaction
 class PasswordChangeSerializer(serializers.Serializer):
     old_password = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, min_length=8)
@@ -640,6 +642,20 @@ class StockSupplySerializer(serializers.ModelSerializer):
         fields = ['id', 'reference', 'supplier', 'supplier_name', 'zone', 'zone_name', 'date', 'status', 
                   'notes', 'created_by', 'created_by_name', 'items']
         read_only_fields = ['id', 'supplier_name', 'zone_name', 'created_by_name']
+    def _generate_reference(self):
+        """Generate a unique reference for the day."""
+        today = timezone.now()
+        datestr = today.strftime("%Y%m%d")
+        last_ref = StockSupply.objects.filter(reference__startswith=f'SUP-{datestr}') \
+            .aggregate(max_ref=Max('reference'))['max_ref']
+        if last_ref:
+            try:
+                last_number = int(last_ref.split('-')[-1])
+            except ValueError:
+                last_number = 0
+        else:
+            last_number = 0
+        return f"SUP-{datestr}-{last_number + 1:04d}"
     
     def get_supplier_name(self, obj):
         return obj.supplier.name if obj.supplier else None
@@ -652,61 +668,42 @@ class StockSupplySerializer(serializers.ModelSerializer):
     
     def create(self, validated_data):
         items_data = validated_data.pop('items')
-        
-        # Get the reference provided, if any
-        reference_value = validated_data.get('reference')
-        print(f"[Serializer Create] Initial reference value: '{reference_value}'")
 
-        # Generate reference if it's missing or an empty string
-        if not reference_value:
-            today = timezone.now()
-            datestr = today.strftime("%Y%m%d")
-            # Use atomic transaction or locking if high concurrency is expected
-            count = StockSupply.objects.filter(reference__startswith=f'SUP-{datestr}').count()
-            generated_reference = f'SUP-{datestr}-{count+1:04d}'
-            validated_data['reference'] = generated_reference
-            print(f"[Serializer Create] Generated reference: {generated_reference}")
-        else:
-            # Ensure the provided reference is not just whitespace
-            if not reference_value.strip():
-                 today = timezone.now()
-                 datestr = today.strftime("%Y%m%d")
-                 count = StockSupply.objects.filter(reference__startswith=f'SUP-{datestr}').count()
-                 generated_reference = f'SUP-{datestr}-{count+1:04d}'
-                 validated_data['reference'] = generated_reference
-                 print(f"[Serializer Create] Provided reference was blank, generated: {generated_reference}")
-            else:
-                 validated_data['reference'] = reference_value.strip() # Use the stripped provided value
-                 print(f"[Serializer Create] Using provided reference: {validated_data['reference']}")
+        # Handle reference
+        reference_value = validated_data.get('reference', '').strip()
+        validated_data['reference'] = reference_value or self._generate_reference()
 
-        print(f"[Serializer Create] Data before StockSupply.objects.create: {validated_data}")
+        # Create the StockSupply
+        supply = StockSupply.objects.create(**validated_data)
 
-        try:
-            # Create the supply object
-            supply = StockSupply.objects.create(**validated_data)
-        except Exception as e:
-            print(f"[Serializer Create] Error during StockSupply.objects.create: {e}")
-            print(f"[Serializer Create] Data passed to create: {validated_data}")
-            raise e # Re-raise the exception
-
-        # Create items
+        # Create supply items
         for item_data in items_data:
-            print(f"[StockSupply Create] Creating item: {item_data}")
-            created_item = StockSupplyItem.objects.create(supply=supply, **item_data)
-            print(f"[StockSupply Create] Created item with ID: {created_item.id}")
+            StockSupplyItem.objects.create(supply=supply, **item_data)
 
-        # Add stock update if status is 'received'
+        # Update stock and create StockCard if received
         if supply.status == 'received':
-            from .models import Stock
             for item in supply.items.all():
-                stock, created = Stock.objects.get_or_create(
+                qty_in = item.received_quantity or item.quantity
+
+                stock, _ = Stock.objects.get_or_create(
                     product=item.product,
                     zone=supply.zone,
                     defaults={'quantity': 0}
                 )
-                stock.quantity += item.received_quantity or item.quantity
+                stock.quantity += qty_in
                 stock.save()
-                print(f"[StockSupply Create] Updated stock for product {item.product.id} in zone {supply.zone.id}")
+
+                # Create stock card entry
+                StockCard.objects.create(
+                    product=item.product,
+                    zone=supply.zone,
+                    date=timezone.now().date(),
+                    transaction_type='supply',
+                    reference=supply.reference,
+                    quantity_in=qty_in,
+                    quantity_out=Decimal('0.00'),
+                    notes=f"Supply received: {supply.reference}"
+                )
 
         return supply
         
@@ -779,7 +776,7 @@ class StockSupplySerializer(serializers.ModelSerializer):
         print(f"[StockSupply Update] Final count: {len(final_items)} items")
         
         return instance
-
+    
 class StockTransferItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True) # Add product name
 
@@ -820,21 +817,46 @@ class StockTransferSerializer(serializers.ModelSerializer):
         if transfer.status == 'completed':
             for item in transfer.items.all():
                 # Remove from source zone
+                qty_out = item.transferred_quantity or item.quantity
                 stock_from, _ = Stock.objects.get_or_create(
                     product=item.product,
                     zone=transfer.from_zone,
                     defaults={'quantity': 0}
                 )
-                stock_from.quantity -= item.transferred_quantity or item.quantity
+                stock_from.quantity -= qty_out
                 stock_from.save()
+                # Create stock card entry
+                StockCard.objects.create(
+                    product=item.product,
+                    zone=transfer.from_zone,
+                    date=timezone.now().date(),
+                    transaction_type='transfer_out',
+                    reference=transfer.reference,
+                    quantity_in=Decimal('0.00'),
+                    quantity_out=qty_out,
+                    notes=f"Transfer sent: {transfer.reference}"
+                )
                 # Add to destination zone
                 stock_to, _ = Stock.objects.get_or_create(
                     product=item.product,
                     zone=transfer.to_zone,
                     defaults={'quantity': 0}
                 )
-                stock_to.quantity += item.transferred_quantity or item.quantity
+                qty_in = item.transferred_quantity or item.quantity
+                stock_to.quantity += qty_in
                 stock_to.save()
+                
+                # Create stock card entry
+                StockCard.objects.create(
+                    product=item.product,
+                    zone=transfer.to_zone,
+                    date=timezone.now().date(),
+                    transaction_type='transfer_in',
+                    reference=transfer.reference,
+                    quantity_in=qty_in,
+                    quantity_out=Decimal('0.00'),
+                    notes=f"Transfer received: {transfer.reference}"
+                )
         return transfer
 
     def update(self, instance, validated_data):
@@ -1130,8 +1152,6 @@ class InventorySerializer(serializers.ModelSerializer):
         if inventory.status != 'completed':
             return
             
-        from .models import StockCard, Stock
-        from django.db import transaction
         
         print(f"[Inventory] Creating stock card entries for inventory {inventory.reference}")
         
@@ -1172,8 +1192,6 @@ class InventorySerializer(serializers.ModelSerializer):
                         reference=inventory.reference,
                         quantity_in=item.difference if item.difference > 0 else 0,
                         quantity_out=abs(item.difference) if item.difference < 0 else 0,
-                        unit_price=item.product.purchase_price or 0,
-                        balance=new_balance,
                         notes=f"Inventaire: Stock système {original_stock_quantity}, comptage {item.actual_quantity}, ajustement {item.difference:+} (attendu: {item.expected_quantity})"
                     )
                 else:
@@ -1186,8 +1204,6 @@ class InventorySerializer(serializers.ModelSerializer):
                         reference=inventory.reference,
                         quantity_in=0,
                         quantity_out=0,
-                        unit_price=item.product.purchase_price or 0,
-                        balance=new_balance,
                         notes=f"Inventaire confirmé: Stock système {original_stock_quantity}, comptage {item.actual_quantity} (attendu: {item.expected_quantity})"
                     )
                 
@@ -1206,7 +1222,7 @@ class StockCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockCard
         fields = ['id', 'product', 'product_name', 'zone', 'zone_name', 'date', 'transaction_type', 'reference',
-                  'quantity_in', 'quantity_out', 'unit_price', 'balance', 'unit_symbol', 'notes']
+                  'quantity_in', 'quantity_out', 'unit_symbol', 'notes']
 
     def get_unit_symbol(self, obj):
         try:

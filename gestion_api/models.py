@@ -1063,8 +1063,6 @@ class StockCard(models.Model):
     reference = models.CharField(max_length=50)  # Référence du document source
     quantity_in = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     quantity_out = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    unit_price = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], null=True, blank=True)
-    balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     
     def __str__(self):
