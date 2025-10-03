@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.contrib.contenttypes.models import ContentType
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+from decimal import Decimal
 
 # I. User Profiles
 class UserProfile(models.Model):
@@ -152,19 +153,6 @@ class Currency(models.Model):
         verbose_name = "Devise"
         verbose_name_plural = "Currencies"
 
-class ExchangeRate(models.Model):
-    from_currency = models.ForeignKey(Currency, on_delete=models.CASCADE, related_name='rates_from', null=True)
-    to_currency = models.ForeignKey(Currency, on_delete=models.CASCADE, related_name='rates_to', null=True)
-    rate = models.DecimalField(max_digits=10, decimal_places=4, validators=[MinValueValidator(0)])
-    date = models.DateField()
-    is_active = models.BooleanField(default=True)
-    
-    def __str__(self):
-        return f"{self.from_currency.code} to {self.to_currency.code}: {self.rate}"
-    
-    class Meta:
-        verbose_name = "Taux de change"
-        verbose_name_plural = "Taux de change"
 
 class PaymentMethod(models.Model):
     name = models.CharField(max_length=100)
@@ -796,25 +784,30 @@ class CashReceipt(models.Model):
         verbose_name = "Encaissement"
         verbose_name_plural = "Encaissements"
 
-class CashPayment(models.Model):
+
+class SupplierCashPayment(models.Model):
     """
-    Décaissement
+    Paiement aux fournisseurs (décaissement)
     """
-    reference = models.CharField(max_length=20, unique=True)  # Fixed: maxlength -> max_lengthlength
-    account = models.ForeignKey(Account, on_delete=models.PROTECT, null=True)
+    reference = models.CharField(max_length=50, unique=True)
+    account = models.ForeignKey(Account, on_delete=models.PROTECT, null=True)  # Company account paying
+    supply = models.ForeignKey('StockSupply', on_delete=models.CASCADE, null=True, blank=True, related_name='payments')
+    supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, null=True, blank=True)
     date = models.DateField()
     amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
+    allocated_amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     description = models.TextField(default="")
     payment_method = models.ForeignKey(PaymentMethod, on_delete=models.PROTECT, null=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
-        return f"Décaissement {self.reference} - {self.amount}"
+        return f"Paiement fournisseur {self.reference} - {self.amount}"
     
     class Meta:
-        verbose_name = "Décaissement"
-        verbose_name_plural = "Décaissements"
+        verbose_name = "Paiement fournisseur"
+        verbose_name_plural = "Paiements fournisseurs"
+
 
 class AccountStatement(models.Model):
     """
@@ -960,12 +953,41 @@ class StockSupply(models.Model):
         ('received', 'Reçu'),
         ('cancelled', 'Annulé')
     ])
+    # Payment tracking fields
+    total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    remaining_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    payment_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('unpaid', 'Non payé'),
+            ('partially_paid', 'Partiellement payé'),
+            ('paid', 'Payé'),
+            ('overpaid', 'Surpayé')
+        ],
+        default='unpaid'
+    )
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
     def __str__(self):
         return f"Approvisionnement {self.reference} - {self.supplier.name}"
+    
+    def get_total_amount(self):
+        """Calculate total amount from supply items"""
+        from django.db.models import Sum
+        return self.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0')
+    
+    def update_payment_status(self):
+        """Update payment status based on amounts"""
+        if self.paid_amount >= self.total_amount and self.total_amount > 0:
+            self.payment_status = 'paid'
+        elif self.paid_amount > 0:
+            self.payment_status = 'partially_paid'
+        else:
+            self.payment_status = 'unpaid'
+        self.remaining_amount = self.total_amount - self.paid_amount
     
     class Meta:
         verbose_name = "Approvisionnement"
@@ -1106,7 +1128,7 @@ class Quote(models.Model):
     date = models.DateField()
     expiry_date = models.DateField()
     status = models.CharField(
-        max_length=20, 
+        max_length=20,
         choices=[
             ('draft', 'Brouillon'),
             ('sent', 'Envoyé'),
@@ -1122,7 +1144,7 @@ class Quote(models.Model):
     total_amount = models.DecimalField(max_digits=15, decimal_places=2)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def save(self, *args, **kwargs):
         # Only generate a reference if this is a new object (no ID yet) and reference is empty
@@ -1172,7 +1194,7 @@ class QuoteItem(models.Model):
     discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     total_price = models.DecimalField(max_digits=15, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         # Fix: Get the UnitOfMeasure object using the unit ID from product
@@ -1184,125 +1206,6 @@ class QuoteItem(models.Model):
             
         return f"{self.quote.reference} - {self.product.name} ({self.quantity} {unit_symbol})"
 
-# VIII. Financial Reporting
-class CashFlow(models.Model):
-    """
-    Model to track all cash movements in the system
-    """
-    FLOW_TYPES = [
-        ('income', 'Income'),
-        ('expense', 'Expense'),
-        ('transfer', 'Transfer'),
-        ('client_payment', 'Client Payment'),
-        ('supplier_payment', 'Supplier Payment'),
-    ]
-    
-    reference = models.CharField(max_length=50, unique=True)
-    date = models.DateField()
-    flow_type = models.CharField(max_length=20, choices=FLOW_TYPES)
-    amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
-    description = models.TextField()
-    account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name='cash_flows')
-    related_document_type = models.CharField(max_length=50, blank=True, null=True)
-    related_document_id = models.IntegerField(blank=True, null=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"{self.get_flow_type_display()} - {self.reference} - {self.amount}"
-    
-    class Meta:
-        verbose_name = "Cash Flow"
-        verbose_name_plural = "Cash Flows"
-
-class BankReconciliation(models.Model):
-    """
-    Model for bank reconciliation
-    """
-    STATUS_CHOICES = [
-        ('draft', 'Draft'),
-        ('in_progress', 'In Progress'),
-        ('completed', 'Completed'),
-        ('cancelled', 'Cancelled'),
-    ]
-    
-    reference = models.CharField(max_length=50, unique=True)
-    account = models.ForeignKey(Account, on_delete=models.PROTECT)
-    start_date = models.DateField()
-    end_date = models.DateField()
-    bank_statement_balance = models.DecimalField(max_digits=15, decimal_places=2)
-    book_balance = models.DecimalField(max_digits=15, decimal_places=2)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
-    notes = models.TextField(blank=True, null=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"Reconciliation {self.reference} - {self.account.name}"
-    
-    class Meta:
-        verbose_name = "Bank Reconciliation"
-        verbose_name_plural = "Bank Reconciliations"
-
-class BankReconciliationItem(models.Model):
-    """
-    Model for bank reconciliation items
-    """
-    TRANSACTION_TYPES = [
-        ('deposit', 'Deposit'),
-        ('withdrawal', 'Withdrawal'),
-        ('check', 'Check'),
-        ('fee', 'Fee'),
-        ('interest', 'Interest'),
-        ('transfer', 'Transfer'),
-        ('other', 'Other'),
-    ]
-    
-    reconciliation = models.ForeignKey(BankReconciliation, on_delete=models.CASCADE, related_name='items')
-    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPES)
-    transaction_date = models.DateField()
-    description = models.TextField()
-    amount = models.DecimalField(max_digits=15, decimal_places=2)
-    is_reconciled = models.BooleanField(default=False)
-    reference_document = models.CharField(max_length=50, blank=True, null=True)
-    
-    def __str__(self):
-        return f"{self.get_transaction_type_display()} - {self.transaction_date} - {self.amount}"
-    
-    class Meta:
-        verbose_name = "Reconciliation Item"
-        verbose_name_plural = "Reconciliation Items"
-
-class FinancialReport(models.Model):
-    """
-    Model for storing financial report configurations
-    """
-    REPORT_TYPES = [
-        ('income_statement', 'Income Statement'),
-        ('balance_sheet', 'Balance Sheet'),
-        ('cash_flow', 'Cash Flow Statement'),
-        ('receivables', 'Accounts Receivable'),
-        ('payables', 'Accounts Payable'),
-        ('custom', 'Custom Report'),
-    ]
-    
-    name = models.CharField(max_length=100, unique=True)
-    report_type = models.CharField(max_length=20, choices=REPORT_TYPES)
-    parameters = models.JSONField(default=dict)
-    is_active = models.BooleanField(default=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"{self.name} ({self.get_report_type_display()})"
-    
-    class Meta:
-        verbose_name = "Financial Report"
-        verbose_name_plural = "Financial Reports"
-
-class AccountPayment(models.Model):
     """
     Payment using client account balance
     """

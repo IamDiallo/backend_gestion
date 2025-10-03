@@ -6,8 +6,8 @@ from .models import (
     Production, ProductionMaterial, StockSupply, StockSupplyItem, 
     StockTransfer, StockTransferItem, Inventory, InventoryItem, 
     StockCard, DeliveryNote, DeliveryNoteItem, ChargeType, SaleCharge, 
-    ClientGroup, Employee, Invoice, Quote, QuoteItem, CashFlow, 
-    BankReconciliation, BankReconciliationItem, FinancialReport, Permission
+    ClientGroup, Employee, Invoice, Quote, QuoteItem,
+    Permission
 )
 
 # Register your models here
@@ -59,33 +59,5 @@ admin.site.register(Quote)
 admin.site.register(QuoteItem)
 admin.site.register(Permission)
 
-# Register financial models
-@admin.register(CashFlow)
-class CashFlowAdmin(admin.ModelAdmin):
-    list_display = ('reference', 'date', 'flow_type', 'amount', 'account', 'created_by')
-    list_filter = ('flow_type', 'date', 'account')
-    search_fields = ('reference', 'description')
-    date_hierarchy = 'date'
-
-@admin.register(BankReconciliation)
-class BankReconciliationAdmin(admin.ModelAdmin):
-    list_display = ('reference', 'account', 'start_date', 'end_date', 'status')
-    list_filter = ('status', 'account')
-    search_fields = ('reference', 'notes')
-    date_hierarchy = 'start_date'
-
-@admin.register(BankReconciliationItem)
-class BankReconciliationItemAdmin(admin.ModelAdmin):
-    list_display = ('reconciliation', 'transaction_type', 'transaction_date', 'amount', 'is_reconciled')
-    list_filter = ('transaction_type', 'is_reconciled')
-    search_fields = ('description', 'reference_document')
-    date_hierarchy = 'transaction_date'
-
-@admin.register(FinancialReport)
-class FinancialReportAdmin(admin.ModelAdmin):
-    list_display = ('name', 'report_type', 'is_active', 'created_by')
-    list_filter = ('report_type', 'is_active')
-    search_fields = ('name',)
-    date_hierarchy = 'created_at'
 
 # DO NOT register Group here - it's already registered by Django admin

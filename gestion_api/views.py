@@ -20,25 +20,24 @@ from .models import (
     Product, Client, Supplier, Sale, SaleItem, UserProfile, ProductCategory,
     Production, ProductionMaterial, StockSupply, StockSupplyItem, StockTransfer,
     StockTransferItem, Inventory, InventoryItem, StockCard, UnitOfMeasure,
-    Zone, Currency, ExchangeRate, PaymentMethod, Account, PriceGroup, 
+    Zone, Currency, PaymentMethod, Account, PriceGroup, 
     ExpenseCategory, Expense, ClientPayment, SupplierPayment, AccountTransfer, 
-    CashFlow, BankReconciliation, FinancialReport, Stock, DeliveryNote,
+    Stock, DeliveryNote,
     DeliveryNoteItem, ChargeType, SaleCharge, Employee, ClientGroup,
-    Invoice, Quote, QuoteItem, CashReceipt, AccountStatement, AccountPayment
+    Invoice, Quote, QuoteItem, CashReceipt, SupplierCashPayment, AccountStatement
 )
 from .serializers import (
     ProductSerializer, ClientSerializer, SupplierSerializer, SaleSerializer, 
     UserProfileSerializer, UserSerializer, PermissionSerializer, GroupSerializer, ZoneSerializer,
-    CurrencySerializer, ExchangeRateSerializer, PaymentMethodSerializer,
+    CurrencySerializer, PaymentMethodSerializer,
     AccountSerializer, PriceGroupSerializer, ExpenseCategorySerializer,
     ExpenseSerializer, ClientPaymentSerializer, SupplierPaymentSerializer,
-    AccountTransferSerializer, CashFlowSerializer, BankReconciliationSerializer,
-    FinancialReportSerializer, ProductCategorySerializer, UnitOfMeasureSerializer,
+    ProductCategorySerializer, UnitOfMeasureSerializer,
     ProductionSerializer, StockSupplySerializer, StockTransferSerializer, 
     InventorySerializer, StockCardSerializer, DeliveryNoteSerializer,
     ChargeTypeSerializer, SaleChargeSerializer, EmployeeSerializer,
     ClientGroupSerializer, InvoiceSerializer, QuoteSerializer, StockSerializer,
-    CashReceiptSerializer, AccountStatementSerializer, PasswordChangeSerializer
+    CashReceiptSerializer, SupplierCashPaymentSerializer, AccountStatementSerializer, PasswordChangeSerializer
 )
 
 
@@ -882,6 +881,60 @@ class SaleViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
     
+    @action(detail=False, methods=['get'])
+    def outstanding_by_client(self, request):
+        """Get outstanding sales for a specific client"""
+        client_id = request.query_params.get('client_id')
+        
+        if not client_id:
+            return Response(
+                {'error': 'client_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get sales with remaining amount > 0 for this client
+            outstanding_sales = Sale.objects.filter(
+                client_id=client_id,
+                remaining_amount__gt=0
+            ).select_related('client', 'zone').order_by('-date')
+            
+            serializer = self.get_serializer(outstanding_sales, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response(
+                {'error': f'Error fetching outstanding sales: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def outstanding_by_supplier(self, request):
+        """Get outstanding sales for a specific supplier"""
+        supplier_id = request.query_params.get('supplier_id')
+        
+        if not supplier_id:
+            return Response(
+                {'error': 'supplier_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get sales with remaining amount > 0 for this supplier
+            # Note: This assumes you have a supplier field on Sale model
+            # If not, adjust the filter accordingly
+            outstanding_sales = Sale.objects.filter(
+                supplier_id=supplier_id,
+                remaining_amount__gt=0
+            ).select_related('zone').order_by('-date')
+            
+            serializer = self.get_serializer(outstanding_sales, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response(
+                {'error': f'Error fetching outstanding sales: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
     @action(detail=False, methods=['post'])
     def recalculate_payment_amounts(self, request):
         """Recalculate paid amounts for all sales based on cash receipts"""
@@ -931,12 +984,6 @@ class CurrencyViewSet(viewsets.ModelViewSet):
     serializer_class = CurrencySerializer
     permission_classes = [IsAuthenticated]
 
-
-class ExchangeRateViewSet(viewsets.ModelViewSet):
-    """API endpoint for exchange rates"""
-    queryset = ExchangeRate.objects.all().order_by('-date')
-    serializer_class = ExchangeRateSerializer
-    permission_classes = [IsAuthenticated]
 
 
 class PaymentMethodViewSet(viewsets.ModelViewSet):
@@ -1009,47 +1056,6 @@ class SupplierPaymentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
 
-
-class AccountTransferViewSet(viewsets.ModelViewSet):
-    """API endpoint for account transfers"""
-    queryset = AccountTransfer.objects.all().order_by('-date')
-    serializer_class = AccountTransferSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
-
-
-class CashFlowViewSet(viewsets.ModelViewSet):
-    """API endpoint for cash flows"""
-    queryset = CashFlow.objects.all().order_by('-date')
-    serializer_class = CashFlowSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
-
-
-class BankReconciliationViewSet(viewsets.ModelViewSet):
-    """API endpoint for bank reconciliations"""
-    queryset = BankReconciliation.objects.all().order_by('-start_date')
-    serializer_class = BankReconciliationSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
-
-
-class FinancialReportViewSet(viewsets.ModelViewSet):
-    """API endpoint for financial reports"""
-    queryset = FinancialReport.objects.all().order_by('-created_at')
-    serializer_class = FinancialReportSerializer
-    permission_classes = [IsAuthenticated]
-
-    def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
-
-
 class ProductCategoryViewSet(viewsets.ModelViewSet):
     """API endpoint for product categories"""
     queryset = ProductCategory.objects.all().order_by('name')
@@ -1076,7 +1082,6 @@ class ProductionViewSet(viewsets.ModelViewSet):
     serializer_class = ProductionSerializer
     permission_classes = [IsAuthenticated]
 
-
 class StockSupplyViewSet(viewsets.ModelViewSet):
     """API endpoint for stock supplies"""
     queryset = StockSupply.objects.all().order_by('-date')
@@ -1085,6 +1090,257 @@ class StockSupplyViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def confirm(self, request, pk=None):
+        """Mark a supply as received and create account statements"""
+        supply = self.get_object()
+        if supply.status == 'received':
+            return Response({'error': 'Supply is already confirmed'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            with transaction.atomic():
+                supply.status = 'received'
+                supply.save(update_fields=['status'])
+                serializer = self.get_serializer(supply)
+                serializer._update_stock_and_create_stockcard(supply)
+                serializer._create_account_statement(supply)
+
+            return Response({'success': True, 'message': 'Supply confirmed and account statement created'})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def _create_account_statement(self, supply):
+        """Create account statement entries for a confirmed stock supply."""
+        # Generate reference
+        statement_count = AccountStatement.objects.filter(date=timezone.now().date()).count()
+        reference = f"SUP-{timezone.now().strftime('%Y%m%d')}-{statement_count + 1:04d}"
+
+        # Get supplier account
+        try:
+            supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
+        except Account.DoesNotExist:
+            raise ValueError("No account found for this supplier")
+
+        # Company account (optional, e.g., cash/bank account)
+        company_account = Account.objects.get(account_type='company', name='Main Account')  # adjust as needed
+
+        # Last balances
+        last_supplier_balance = AccountStatement.objects.filter(account=supplier_account).order_by('-date', '-id').first()
+        supplier_previous_balance = Decimal(last_supplier_balance.balance) if last_supplier_balance else Decimal('0.00')
+
+        last_company_balance = AccountStatement.objects.filter(account=company_account).order_by('-date', '-id').first()
+        company_previous_balance = Decimal(last_company_balance.balance) if last_company_balance else Decimal('0.00')
+
+        total_amount = supply.get_total_amount()  # you'll need a method on StockSupply to calculate total cost
+
+        # Supplier account: credit (we owe them)
+        new_supplier_balance = supplier_previous_balance + total_amount
+        AccountStatement.objects.create(
+            account=supplier_account,
+            date=timezone.now().date(),
+            transaction_type='supply',
+            reference=reference,
+            description=f"Supply received - {supply.reference} from {supply.supplier.name}",
+            credit=total_amount,
+            debit=0,
+            balance=new_supplier_balance,
+        )
+        supplier_account.current_balance = new_supplier_balance
+        supplier_account.save(update_fields=['current_balance'])
+
+        # Company account: debit if paying immediately
+        new_company_balance = company_previous_balance - total_amount
+        AccountStatement.objects.create(
+            account=company_account,
+            date=timezone.now().date(),
+            transaction_type='supply',
+            reference=reference,
+            description=f"Payment for supply {supply.reference} - {supply.supplier.name}",
+            credit=0,
+            debit=total_amount,
+            balance=new_company_balance,
+        )
+        company_account.current_balance = new_company_balance
+        company_account.save(update_fields=['current_balance'])
+
+    @action(detail=False, methods=['get'])
+    def outstanding_by_supplier(self, request):
+        """Get outstanding stock supplies for a specific supplier"""
+        supplier_id = request.query_params.get('supplier_id')
+        
+        if not supplier_id:
+            return Response(
+                {'error': 'supplier_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get supplies with remaining amount > 0 for this supplier
+            outstanding_supplies = StockSupply.objects.filter(
+                supplier_id=supplier_id,
+                remaining_amount__gt=0,
+                status='received'
+            ).select_related('supplier').order_by('-date')
+            
+            serializer = self.get_serializer(outstanding_supplies, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response(
+                {'error': f'Error fetching outstanding supplies: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['post'])
+    def pay_from_account(self, request, pk=None):
+        """Process payment for a supply from company account to supplier account"""
+        supply = self.get_object()
+        amount = Decimal(str(request.data.get('amount', 0)))
+        description = request.data.get('description', f'Payment for supply {supply.reference}')
+        company_account_id = request.data.get('company_account')
+        
+        if amount <= 0:
+            return Response(
+                {'error': 'Payment amount must be greater than 0'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not company_account_id:
+            return Response(
+                {'error': 'company_account parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            with transaction.atomic():
+                # Generate reference number
+                payment_count = SupplierCashPayment.objects.filter(
+                    date=timezone.now().date()
+                ).count()
+                reference = f"PAYSUPP-{timezone.now().strftime('%Y%m%d')}-{payment_count + 1:04d}"
+                
+                # Get the supplier's account
+                try:
+                    supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
+                except Account.DoesNotExist:
+                    return Response(
+                        {'error': 'No account found for this supplier'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Get the company account
+                try:
+                    company_account = Account.objects.get(id=company_account_id)
+                except Account.DoesNotExist:
+                    return Response(
+                        {'error': 'Company account not found'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Note: We allow payments even with insufficient balance
+                # This will result in a negative balance for the company account
+                
+                # Get last statement for supplier account
+                last_supplier_statement = AccountStatement.objects.filter(
+                    account=supplier_account
+                ).order_by('-date', '-id').first()
+                previous_supplier_balance = Decimal(str(last_supplier_statement.balance)) if last_supplier_statement else Decimal('0.00')
+                
+                # Get last statement for company account
+                last_company_statement = AccountStatement.objects.filter(
+                    account=company_account
+                ).order_by('-date', '-id').first()
+                previous_company_balance = Decimal(str(last_company_statement.balance)) if last_company_statement else Decimal('0.00')
+                
+                # Create SupplierCashPayment (payment record)
+                payment = SupplierCashPayment.objects.create(
+                    reference=reference,
+                    account=company_account,
+                    supply=supply,
+                    supplier=supply.supplier,
+                    date=timezone.now().date(),
+                    amount=amount,
+                    allocated_amount=amount,
+                    description=description,
+                    created_by=request.user
+                )
+                
+                # Debit supplier account (reduce what we owe)
+                new_supplier_balance = previous_supplier_balance - amount
+                AccountStatement.objects.create(
+                    account=supplier_account,
+                    date=timezone.now().date(),
+                    transaction_type='supply',
+                    reference=reference,
+                    description=f"Paiement approvisionnement {supply.reference} - {supply.supplier.name}",
+                    credit=0,
+                    debit=amount,
+                    balance=new_supplier_balance,
+                )
+                supplier_account.current_balance = new_supplier_balance
+                supplier_account.save(update_fields=['current_balance'])
+                
+                # Debit company account (money going out)
+                new_company_balance = previous_company_balance - amount
+                AccountStatement.objects.create(
+                    account=company_account,
+                    date=timezone.now().date(),
+                    transaction_type='supply',
+                    reference=reference,
+                    description=f"Paiement fournisseur {supply.supplier.name} pour approvisionnement {supply.reference}",
+                    credit=0,
+                    debit=amount,
+                    balance=new_company_balance,
+                )
+                company_account.current_balance = new_company_balance
+                company_account.save(update_fields=['current_balance'])
+                
+                # Update supply payment status and amounts
+                supply.refresh_from_db()
+                paid_amount = SupplierCashPayment.objects.filter(supply=supply).aggregate(
+                    total=Sum('allocated_amount')
+                )['total'] or Decimal('0')
+                
+                supply.paid_amount = paid_amount
+                supply.remaining_amount = supply.total_amount - paid_amount
+                
+                if paid_amount >= supply.total_amount:
+                    supply.payment_status = 'paid'
+                elif paid_amount > 0:
+                    supply.payment_status = 'partially_paid'
+                else:
+                    supply.payment_status = 'unpaid'
+                
+                supply.save()
+                
+                # Return the updated supplier and company balances
+                return Response({
+                    'success': True,
+                    'message': 'Payment processed successfully',
+                    'payment': {
+                        'id': payment.id,
+                        'reference': payment.reference,
+                        'amount': str(payment.amount),
+                        'date': payment.date.isoformat()
+                    },
+                    'supply': {
+                        'id': supply.id,
+                        'reference': supply.reference,
+                        'payment_status': supply.payment_status,
+                        'workflow_state': supply.status,
+                        'total_amount': str(supply.total_amount),
+                        'paid_amount': str(supply.paid_amount),
+                        'remaining_amount': str(supply.remaining_amount)
+                    },
+                    'supplier_balance': float(supplier_account.current_balance),
+                    'company_balance': float(company_account.current_balance)
+                })
+        except Exception as e:
+            return Response(
+                {'error': f'Error processing payment: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
 
 
 class StockTransferViewSet(viewsets.ModelViewSet):
@@ -1320,19 +1576,49 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
         return queryset
 
     @action(detail=False, methods=['get'])
-    def client_balance(self, request):
-        """Get comprehensive client balance with statements and outstanding sales"""
-        client_id = request.query_params.get('client_id')
-        if not client_id:
-            return Response({'error': 'client_id parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+    def balance(self, request):
+        """Get ONLY the current balance for an account (DEPRECATED - use account_balance instead)"""
+        # This endpoint is kept for backwards compatibility
+        # New code should use account_balance endpoint
+        id = request.query_params.get('id')
+        type = request.query_params.get('type')
+        account_id = request.query_params.get('account_id')
+
+        # New API: Get balance by account_id directly
+        if account_id:
+            try:
+                account = Account.objects.get(id=account_id)
+                last_statement = AccountStatement.objects.filter(account=account).order_by('-date', '-id').first()
+                balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
+                
+                return Response({
+                    'balance': float(balance),
+                    'account_id': account.id
+                })
+            except Account.DoesNotExist:
+                return Response({'error': 'Account not found'}, status=status.HTTP_404_NOT_FOUND)
+            except Exception as e:
+                return Response(
+                    {'error': f'Error fetching balance: {str(e)}'}, 
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+
+        # Old API: Get comprehensive data (kept for backwards compatibility)
+        if not id or not type:
+            return Response({'error': 'id and type parameters are required'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            client = Client.objects.get(id=client_id)
-            
+            if type == 'client':
+                info = Client.objects.get(id=id)
+            elif type == 'supplier':
+                info = Supplier.objects.get(id=id)
+            else:   
+                return Response({'error': 'Invalid type parameter'}, status=status.HTTP_400_BAD_REQUEST )
+
             # Ensure client has an account
-            if not client.account:
+            if not info.account:
                 return Response({'error': 'No account found for this client'}, status=404)
 
-            account = client.account
+            account = info.account
 
             # Use only this account for statements and balance
             statements = AccountStatement.objects.filter(account=account).order_by('-date', '-id').values(
@@ -1345,19 +1631,22 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
             balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
 
             # Get outstanding sales for the client
-            outstanding_sales = Sale.objects.filter(
-                client=client, 
-                payment_status__in=['unpaid', 'partially_paid']
-            ).values(
-                'id', 'reference', 'date', 'total_amount', 'paid_amount', 'payment_status'
-            )
+            if type == 'client':
+                outstanding_sales = Sale.objects.filter(
+                    client=info, 
+                    payment_status__in=['unpaid', 'partially_paid']
+                ).values(
+                    'id', 'reference', 'date', 'total_amount', 'paid_amount', 'payment_status'
+                )
+            elif type == 'supplier':
+                outstanding_sales = []  # Implement supplier outstanding purchases if needed
 
             # Get total sales and payments for the client
-            total_sales = Sale.objects.filter(client=client).aggregate(total=Sum('total_amount'))['total'] or 0
+            total_sales = Sale.objects.filter(client=info).aggregate(total=Sum('total_amount'))['total'] or 0
             total_account_credits = AccountStatement.objects.filter(account=account, credit__gt=0).aggregate(total=Sum('credit'))['total'] or 0
             sale_payments_from_account = AccountStatement.objects.filter(account=account, transaction_type='client_payment', debit__gt=0).aggregate(total=Sum('debit'))['total'] or 0
 
-            sales_count = Sale.objects.filter(client=client).count()
+            sales_count = Sale.objects.filter(client=info).count()
             payments_count = AccountStatement.objects.filter(account=account).count()
 
             # Add transaction_type_display for statements
@@ -1379,8 +1668,8 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 )
 
             return Response({
-                'client_id': client_id,
-                'client_name': client.name,
+                'id': info.id,
+                'name': info.name,
                 'account_id': account.id,
                 'total_sales': float(total_sales),
                 'total_account_credits': float(total_account_credits),
@@ -1392,11 +1681,137 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 'statements': list(statements),
             })
 
-        except Client.DoesNotExist:
-            return Response({'error': 'Client not found'}, status=404)
+        except (Client.DoesNotExist, Supplier.DoesNotExist):
+            return Response({'error': 'Client or Supplier not found'}, status=404)
 
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
+    def account_info(self, request):
+        """Get comprehensive account info: balance + statements + outstanding sales"""
+        account_id = request.query_params.get('account_id')
+        entity_type = request.query_params.get('type')  # 'client' or 'supplier'
+        
+        if not account_id:
+            return Response(
+                {'error': 'account_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if entity_type not in ['client', 'supplier']:
+            return Response(
+                {'error': 'type parameter must be "client" or "supplier"'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            # Get the account
+            account = Account.objects.get(id=account_id)
+            
+            # Get current balance from last statement
+            last_statement = AccountStatement.objects.filter(account=account).order_by('-date', '-id').first()
+            balance = Decimal(str(last_statement.balance)) if last_statement else Decimal('0.00')
+            
+            # Get statements for this account
+            statements = AccountStatement.objects.filter(account=account).order_by('-date', '-id')[:50]
+            
+            # Add transaction_type_display for statements
+            transaction_type_choices = {
+                'client_payment': 'Règlement client',
+                'supplier_payment': 'Règlement fournisseur',
+                'transfer_in': 'Virement entrant',
+                'transfer_out': 'Virement sortant',
+                'cash_receipt': 'Encaissement',
+                'cash_payment': 'Décaissement',
+                'expense': 'Dépense',
+                'sale': 'Vente',
+                'purchase': 'Achat',
+                'deposit': 'Dépôt',
+                'supply': 'Approvisionnement'
+            }
+            
+            statements_data = []
+            for statement in statements:
+                statements_data.append({
+                    'id': statement.id,
+                    'account_id': statement.account_id,
+                    'date': statement.date,
+                    'reference': statement.reference,
+                    'transaction_type': statement.transaction_type,
+                    'transaction_type_display': transaction_type_choices.get(
+                        statement.transaction_type, statement.transaction_type
+                    ),
+                    'description': statement.description,
+                    'debit': str(statement.debit),
+                    'credit': str(statement.credit),
+                    'balance': str(statement.balance)
+                })
+            
+            # Get outstanding sales/supplies based on entity type
+            outstanding_sales_data = []
+            outstanding_supplies_data = []
+            
+            if entity_type == 'client':
+                try:
+                    client = Client.objects.get(account=account)
+                    outstanding_sales = Sale.objects.filter(
+                        client=client,
+                        remaining_amount__gt=0
+                    ).select_related('client', 'zone').order_by('-date')
+                    
+                    for sale in outstanding_sales:
+                        outstanding_sales_data.append({
+                            'id': sale.id,
+                            'reference': sale.reference,
+                            'date': sale.date,
+                            'total_amount': str(sale.total_amount),
+                            'paid_amount': str(sale.paid_amount),
+                            'remaining_amount': str(sale.remaining_amount),
+                            'payment_status': sale.payment_status
+                        })
+                except Client.DoesNotExist:
+                    pass
+                    
+            elif entity_type == 'supplier':
+                try:
+                    supplier = Supplier.objects.get(account=account)
+                    outstanding_supplies = StockSupply.objects.filter(
+                        supplier=supplier,
+                        remaining_amount__gt=0,
+                        status='received'
+                    ).select_related('supplier').order_by('-date')
+                    
+                    for supply in outstanding_supplies:
+                        outstanding_supplies_data.append({
+                            'id': supply.id,
+                            'reference': supply.reference,
+                            'date': supply.date,
+                            'total_amount': str(supply.total_amount),
+                            'paid_amount': str(supply.paid_amount),
+                            'remaining_amount': str(supply.remaining_amount),
+                            'payment_status': supply.payment_status
+                        })
+                except Supplier.DoesNotExist:
+                    pass
+            
+            return Response({
+                'balance': float(balance),
+                'statements': statements_data,
+                'outstanding_sales': outstanding_sales_data,
+                'outstanding_supplies': outstanding_supplies_data
+            })
+            
+        except Account.DoesNotExist:
+            return Response(
+                {'error': 'Account not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Error fetching account info: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 
 # Debug Views

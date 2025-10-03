@@ -26,7 +26,6 @@ router.register(r'invoices', views.InvoiceViewSet)
 router.register(r'quotes', views.QuoteViewSet)
 # Uncomment these now that they have their corresponding viewsets
 router.register(r'currencies', views.CurrencyViewSet)
-router.register(r'exchange-rates', views.ExchangeRateViewSet)
 router.register(r'payment-methods', views.PaymentMethodViewSet)
 router.register(r'accounts', views.AccountViewSet)
 router.register(r'price-groups', views.PriceGroupViewSet)
@@ -34,16 +33,12 @@ router.register(r'expense-categories', views.ExpenseCategoryViewSet)
 router.register(r'expenses', views.ExpenseViewSet)
 router.register(r'client-payments', views.ClientPaymentViewSet)
 router.register(r'supplier-payments', views.SupplierPaymentViewSet)
-router.register(r'account-transfers', views.AccountTransferViewSet)
 router.register(r'units-of-measure', views.UnitOfMeasureViewSet)
 # Add these new routers
-router.register(r'cash-flows', views.CashFlowViewSet)
-router.register(r'bank-reconciliations', views.BankReconciliationViewSet)
-router.register(r'financial-reports', views.FinancialReportViewSet)
 router.register(r'product-categories', ProductCategoryViewSet)
 router.register(r'stocks', views.StockViewSet)
 router.register(r'cash-receipts', views.CashReceiptViewSet)
-router.register(r'account-statements', views.AccountStatementViewSet)  # Add AccountStatementViewSet
+router.register(r'account-statements', views.AccountStatementViewSet)
 
 urlpatterns = [
     # Stock-specific endpoints MUST come before router.urls to avoid conflicts

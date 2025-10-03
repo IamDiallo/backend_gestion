@@ -3,15 +3,14 @@ from django.contrib.auth.models import User, Group, Permission
 from django.utils import timezone
 from .models import (
     Product, Client, Supplier, UserProfile, Zone, Sale, SaleItem, 
-    Currency, ExchangeRate, PaymentMethod, Account, PriceGroup, 
+    Currency, PaymentMethod, Account, PriceGroup, 
     ExpenseCategory, Expense, ClientPayment, SupplierPayment, 
-    AccountTransfer, UnitOfMeasure, CashFlow, BankReconciliation, 
-    BankReconciliationItem, FinancialReport, ProductCategory,
+    AccountTransfer, UnitOfMeasure, ProductCategory,
     Production, ProductionMaterial, StockSupply, StockSupplyItem, 
     StockTransfer, StockTransferItem, Inventory, InventoryItem,
     StockCard, DeliveryNote, DeliveryNoteItem, ChargeType, SaleCharge,
     Employee, ClientGroup, Invoice, Quote, QuoteItem, Stock,
-    CashReceipt, AccountStatement
+    CashReceipt, SupplierCashPayment, AccountStatement
 )
 from decimal import Decimal
 from django.db.models import Max
@@ -456,15 +455,6 @@ class CurrencySerializer(serializers.ModelSerializer):
         model = Currency
         fields = ['id', 'name', 'code', 'symbol', 'is_base', 'is_active']
 
-class ExchangeRateSerializer(serializers.ModelSerializer):
-    from_currency_code = serializers.CharField(source='from_currency.code', read_only=True)
-    to_currency_code = serializers.CharField(source='to_currency.code', read_only=True)
-    
-    class Meta:
-        model = ExchangeRate
-        fields = ['id', 'from_currency', 'from_currency_code', 'to_currency', 'to_currency_code', 
-                 'rate', 'date', 'is_active']
-
 class PaymentMethodSerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentMethod
@@ -530,53 +520,6 @@ class SupplierPaymentSerializer(serializers.ModelSerializer):
                   'date', 'amount', 'payment_method', 'payment_method_name',
                   'notes', 'created_by', 'created_by_name', 'created_at']
 
-class AccountTransferSerializer(serializers.ModelSerializer):
-    from_account_name = serializers.CharField(source='from_account.name', read_only=True)
-    to_account_name = serializers.CharField(source='to_account.name', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
-    class Meta:
-        model = AccountTransfer
-        fields = ['id', 'reference', 'from_account', 'from_account_name', 
-                  'to_account', 'to_account_name', 'date', 'amount',
-                  'exchange_rate', 'notes', 'created_by', 'created_by_name', 'created_at']
-
-# Financial model serializers
-class BankReconciliationItemSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = BankReconciliationItem
-        fields = ['id', 'reconciliation', 'transaction_type', 'transaction_date', 
-                  'description', 'amount', 'is_reconciled', 'reference_document']
-
-class BankReconciliationSerializer(serializers.ModelSerializer):
-    account_name = serializers.CharField(source='account.name', read_only=True)
-    items = BankReconciliationItemSerializer(many=True, read_only=True)
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
-    class Meta:
-        model = BankReconciliation
-        fields = ['id', 'reference', 'account', 'account_name', 'start_date', 'end_date', 
-                  'bank_statement_balance', 'book_balance', 'status', 'notes', 
-                  'created_by', 'created_by_name', 'created_at', 'updated_at', 'items']
-
-class CashFlowSerializer(serializers.ModelSerializer):
-    account_name = serializers.CharField(source='account.name', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
-    class Meta:
-        model = CashFlow
-        fields = ['id', 'reference', 'date', 'flow_type', 'amount', 'description', 
-                  'account', 'account_name', 'related_document_type', 'related_document_id', 
-                  'created_by', 'created_by_name', 'created_at']
-
-class FinancialReportSerializer(serializers.ModelSerializer):
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-    
-    class Meta:
-        model = FinancialReport
-        fields = ['id', 'name', 'report_type', 'parameters', 'is_active', 
-                  'created_by', 'created_by_name', 'created_at', 'updated_at']
-
 class ProductCategorySerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.username', read_only=True, required=False)
     
@@ -629,17 +572,18 @@ class StockSupplyItemSerializer(serializers.ModelSerializer):
         print(f"[StockSupplyItem Serializer] Serializing item {instance.id}: {data}")
         return data
 
+
 class StockSupplySerializer(serializers.ModelSerializer):
     supplier_name = serializers.SerializerMethodField()
     zone_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     items = StockSupplyItemSerializer(many=True)
-    # Make reference optional and allow blank strings
     reference = serializers.CharField(required=False, allow_blank=True)
     
     class Meta:
         model = StockSupply
-        fields = ['id', 'reference', 'supplier', 'supplier_name', 'zone', 'zone_name', 'date', 'status', 
+        fields = ['id', 'reference', 'supplier', 'supplier_name', 'zone', 'zone_name', 'date', 'status',
+                  'total_amount', 'paid_amount', 'remaining_amount', 'payment_status',
                   'notes', 'created_by', 'created_by_name', 'items']
         read_only_fields = ['id', 'supplier_name', 'zone_name', 'created_by_name']
     def _generate_reference(self):
@@ -665,118 +609,182 @@ class StockSupplySerializer(serializers.ModelSerializer):
     
     def get_created_by_name(self, obj):
         return obj.created_by.username if obj.created_by else None
-    
+
     def create(self, validated_data):
         items_data = validated_data.pop('items')
 
-        # Handle reference
         reference_value = validated_data.get('reference', '').strip()
         validated_data['reference'] = reference_value or self._generate_reference()
 
-        # Create the StockSupply
         supply = StockSupply.objects.create(**validated_data)
 
-        # Create supply items
         for item_data in items_data:
             StockSupplyItem.objects.create(supply=supply, **item_data)
 
-        # Update stock and create StockCard if received
+        # Calculate and set payment tracking fields
+        supply.total_amount = supply.get_total_amount()
+        supply.remaining_amount = supply.total_amount - supply.paid_amount
+        supply.update_payment_status()
+        supply.save(update_fields=['total_amount', 'paid_amount', 'remaining_amount', 'payment_status'])
+
         if supply.status == 'received':
-            for item in supply.items.all():
-                qty_in = item.received_quantity or item.quantity
-
-                stock, _ = Stock.objects.get_or_create(
-                    product=item.product,
-                    zone=supply.zone,
-                    defaults={'quantity': 0}
-                )
-                stock.quantity += qty_in
-                stock.save()
-
-                # Create stock card entry
-                StockCard.objects.create(
-                    product=item.product,
-                    zone=supply.zone,
-                    date=timezone.now().date(),
-                    transaction_type='supply',
-                    reference=supply.reference,
-                    quantity_in=qty_in,
-                    quantity_out=Decimal('0.00'),
-                    notes=f"Supply received: {supply.reference}"
-                )
+            self._update_stock_and_create_stockcard(supply)
+            self._create_account_statement(supply)
 
         return supply
-        
+
     def update(self, instance, validated_data):
         items_data = validated_data.pop('items', [])
-        status_before = instance.status
-        
-        # Update the supply fields
+        status_before = instance.status  # track previous status
+
+        # 1️⃣ Update parent StockSupply fields manually
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
 
-        if status_before != 'received' and instance.status == 'received':
-            from .models import Stock
-            for item in instance.items.all():
-                stock, created = Stock.objects.get_or_create(
-                    product=item.product,
-                    zone=instance.zone,
-                    defaults={'quantity': 0}
-                )
-                stock.quantity += item.received_quantity or item.quantity
-                stock.save()
-
-        instance.refresh_from_db()
-        
-        
-        # Get all existing items before any changes
-        existing_items = list(instance.items.all())
-        
-        # Track which items were updated/created
+        # 2️⃣ Handle nested StockSupplyItems manually
+        existing_items = {item.id: item for item in instance.items.all()}
         processed_item_ids = set()
-        
+
         for item_data in items_data:
             item_id = item_data.get('id')
-            
-            if item_id:
+            if item_id and item_id in existing_items:
                 # Update existing item
-                try:
-                    item_instance = StockSupplyItem.objects.get(id=item_id, supply=instance)
-                    item_serializer = StockSupplyItemSerializer(item_instance, data=item_data, partial=True)
-                    if item_serializer.is_valid():
-                        item_serializer.save()
-                        processed_item_ids.add(item_id)
-                        print(f"[StockSupply Update] Updated existing item {item_id}")
-                    else:
-                        print(f"[StockSupply Update] Error updating supply item {item_id}: {item_serializer.errors}")
-                except StockSupplyItem.DoesNotExist:
-                    print(f"[StockSupply Update] Item {item_id} not found, will create new one")
-                    # Create new item if the ID doesn't exist
-                    new_item = StockSupplyItem.objects.create(supply=instance, **{k:v for k,v in item_data.items() if k != 'id'})
-                    processed_item_ids.add(new_item.id)
+                item = existing_items[item_id]
+                for key, val in item_data.items():
+                    if key != 'id':
+                        setattr(item, key, val)
+                item.save()
+                processed_item_ids.add(item_id)
             else:
-                # Create new item (no ID provided)
+                # Create new item
+                if 'supply' in item_data:
+                    item_data.pop('supply')
                 new_item = StockSupplyItem.objects.create(supply=instance, **item_data)
                 processed_item_ids.add(new_item.id)
-                print(f"[StockSupply Update] Created new item {new_item.id}")
-        
-        # Delete items that were not included in the update request
-        items_to_delete = []
-        for item in existing_items:
+
+        # Delete removed items
+        for item in existing_items.values():
             if item.id not in processed_item_ids:
-                items_to_delete.append(item.id)
                 item.delete()
-        
-        if items_to_delete:
-            print(f"[StockSupply Update] Deleted items: {items_to_delete}")
-        
+
         instance.refresh_from_db()
-        final_items = list(instance.items.all())
-        print(f"[StockSupply Update] Final count: {len(final_items)} items")
-        
+
+        # Calculate and update payment tracking fields
+        instance.total_amount = instance.get_total_amount()
+        instance.remaining_amount = instance.total_amount - instance.paid_amount
+        instance.update_payment_status()
+        instance.save(update_fields=['total_amount', 'paid_amount', 'remaining_amount', 'payment_status'])
+
+        # 3️⃣ Only update stock and account statements if status changed to 'received'
+        if status_before != 'received' and instance.status == 'received':
+            self._update_stock_and_create_stockcard(instance)
+            self._create_account_statement(instance)
+
         return instance
-    
+
+
+    def delete(self):
+        """Reverse stock and account statement when deleting a supply"""
+        supply = self.instance
+
+        # Reduce stock
+        for item in supply.items.all():
+            stock, _ = Stock.objects.get_or_create(product=item.product, zone=supply.zone, defaults={'quantity': 0})
+            stock.quantity -= item.received_quantity or item.quantity
+            stock.save()
+
+        # Reverse account statements if supply was received
+        if supply.status == 'received':
+            try:
+                supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
+                company_account = Account.objects.get(account_type='company', name='Main Account')
+
+                # Reverse supplier credit
+                last_supplier_stmt = AccountStatement.objects.filter(account=supplier_account).order_by('-date', '-id').first()
+                if last_supplier_stmt:
+                    supplier_account.current_balance -= last_supplier_stmt.credit
+                    supplier_account.save(update_fields=['current_balance'])
+                    last_supplier_stmt.delete()
+
+                # Reverse company debit
+                last_company_stmt = AccountStatement.objects.filter(account=company_account).order_by('-date', '-id').first()
+                if last_company_stmt:
+                    company_account.current_balance += last_company_stmt.debit
+                    company_account.save(update_fields=['current_balance'])
+                    last_company_stmt.delete()
+            except Account.DoesNotExist:
+                pass  # handle missing accounts gracefully
+
+        # Delete items and the supply itself
+        supply.items.all().delete()
+        supply.delete()
+
+    def _update_stock_and_create_stockcard(self, supply):
+        """Handles stock quantity updates and StockCard creation"""
+        for item in supply.items.all():
+            qty_in = item.received_quantity or item.quantity
+            stock, _ = Stock.objects.get_or_create(product=item.product, zone=supply.zone, defaults={'quantity': 0})
+            stock.quantity += qty_in
+            stock.save()
+
+            from .models import StockCard
+            StockCard.objects.create(
+                product=item.product,
+                zone=supply.zone,
+                date=timezone.now().date(),
+                transaction_type='supply',
+                reference=supply.reference,
+                quantity_in=qty_in,
+                quantity_out=Decimal('0.00'),
+                notes=f"Supply received: {supply.reference}"
+            )
+
+    def _create_account_statement(self, supply):
+        """Creates account statements for supplier and company when supply is received"""
+        total_amount = sum((item.received_quantity or item.quantity) * item.unit_price for item in supply.items.all())
+
+        with transaction.atomic():
+            # Generate reference
+            count = AccountStatement.objects.filter(date=timezone.now().date()).count()
+            reference = f"SUP-{timezone.now().strftime('%Y%m%d')}-{count + 1:04d}"
+            # Supplier account (credit)
+            supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
+
+            last_supplier_balance = AccountStatement.objects.filter(account=supplier_account).order_by('-date', '-id').first()
+            supplier_previous_balance = Decimal(last_supplier_balance.balance) if last_supplier_balance else Decimal('0.00')
+            new_supplier_balance = supplier_previous_balance + total_amount
+            AccountStatement.objects.create(
+                account=supplier_account,
+                date=timezone.now().date(),
+                transaction_type='supply',
+                reference=reference,
+                description=f"Supply received {supply.reference} from {supply.supplier.name}",
+                credit=total_amount,
+                debit=0,
+                balance=new_supplier_balance
+            )
+            supplier_account.current_balance = new_supplier_balance
+            supplier_account.save(update_fields=['current_balance'])
+
+            # Company account (debit)
+            company_account = Account.objects.get(account_type='internal', name='Supplies Paiements') # Adjust later
+            last_company_balance = AccountStatement.objects.filter(account=company_account).order_by('-date', '-id').first()
+            company_previous_balance = Decimal(last_company_balance.balance) if last_company_balance else Decimal('0.00')
+            new_company_balance = company_previous_balance - total_amount
+            AccountStatement.objects.create(
+                account=company_account,
+                date=timezone.now().date(),
+                transaction_type='supply',
+                reference=reference,
+                description=f"Payment for supply {supply.reference} - {supply.supplier.name}",
+                credit=0,
+                debit=total_amount,
+                balance=new_company_balance
+            )
+            company_account.current_balance = new_company_balance
+            company_account.save(update_fields=['current_balance'])
+
 class StockTransferItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True) # Add product name
 
@@ -1335,6 +1343,27 @@ class CashReceiptSerializer(serializers.ModelSerializer):
     class Meta:
         model = CashReceipt
         fields = '__all__'
+
+
+class SupplierCashPaymentSerializer(serializers.ModelSerializer):
+    supplier_name = serializers.SerializerMethodField()
+    account_name = serializers.SerializerMethodField()
+    payment_method_name = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = SupplierCashPayment
+        fields = '__all__'
+        read_only_fields = ['id', 'created_at']
+    
+    def get_supplier_name(self, obj):
+        return obj.supplier.name if obj.supplier else None
+    
+    def get_account_name(self, obj):
+        return obj.account.name if obj.account else None
+    
+    def get_payment_method_name(self, obj):
+        return obj.payment_method.name if obj.payment_method else None
+
 
 class AccountStatementSerializer(serializers.ModelSerializer):
     transaction_type_display = serializers.CharField(source='get_transaction_type_display', read_only=True)
