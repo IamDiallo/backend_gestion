@@ -397,6 +397,18 @@ class SaleSerializer(serializers.ModelSerializer):
                 raise ValueError(f"Not enough stock for product {item.product}")
             stock.quantity -= item.quantity
             stock.save()
+            
+            # Create Stock Card entry for the sale
+            StockCard.objects.create(
+                product=item.product,
+                zone=sale.zone,
+                date=sale.date,
+                transaction_type='sale',
+                reference=sale.reference,
+                quantity_in=0,
+                quantity_out=item.quantity,
+                notes=f"Sale: {sale.reference}"
+            )
 
         return sale
 
@@ -555,6 +567,42 @@ class ProductionSerializer(serializers.ModelSerializer):
         model = Production
         fields = ['id', 'reference', 'product', 'product_name', 'quantity', 
                   'zone', 'zone_name', 'date', 'notes', 'created_at', 'materials']
+    
+    def create(self, validated_data):
+        """
+        Create production and update stock automatically
+        """
+        from decimal import Decimal
+        from django.db import transaction
+        
+        with transaction.atomic():
+            # Create the production record
+            production = Production.objects.create(**validated_data)
+            
+            # Get or create stock for this product in this zone
+            stock, created = Stock.objects.get_or_create(
+                product=production.product,
+                zone=production.zone,
+                defaults={'quantity': Decimal('0.00')}
+            )
+            
+            # Update stock quantity (production increases stock)
+            stock.quantity += production.quantity
+            stock.save()
+            
+            # Create StockCard entry to track this production
+            StockCard.objects.create(
+                product=production.product,
+                zone=production.zone,
+                date=production.date,
+                transaction_type='production',
+                reference=production.reference,
+                quantity_in=production.quantity,
+                quantity_out=Decimal('0.00'),
+                notes=f"Production: {production.notes}" if production.notes else "Production"
+            )
+            
+            return production
 
 class StockSupplyItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True) # Add product name
@@ -698,7 +746,14 @@ class StockSupplySerializer(serializers.ModelSerializer):
         if supply.status == 'received':
             try:
                 supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
-                company_account = Account.objects.get(account_type='company', name='Main Account')
+                # Get first available cash, bank, or internal account for company transactions
+                company_account = Account.objects.filter(
+                    account_type__in=['cash', 'bank', 'internal'],
+                    is_active=True
+                ).first()
+                
+                if not company_account:
+                    raise Account.DoesNotExist("No active cash, bank, or internal account found")
 
                 # Reverse supplier credit
                 last_supplier_stmt = AccountStatement.objects.filter(account=supplier_account).order_by('-date', '-id').first()
@@ -767,8 +822,15 @@ class StockSupplySerializer(serializers.ModelSerializer):
             supplier_account.current_balance = new_supplier_balance
             supplier_account.save(update_fields=['current_balance'])
 
-            # Company account (debit)
-            company_account = Account.objects.get(account_type='internal', name='Supplies Paiements') # Adjust later
+            # Company account (debit) - use first available cash, bank, or internal account
+            company_account = Account.objects.filter(
+                account_type__in=['cash', 'bank', 'internal'],
+                is_active=True
+            ).first()
+            
+            if not company_account:
+                raise Account.DoesNotExist("No active cash, bank, or internal account found for supply transactions")
+            
             last_company_balance = AccountStatement.objects.filter(account=company_account).order_by('-date', '-id').first()
             company_previous_balance = Decimal(last_company_balance.balance) if last_company_balance else Decimal('0.00')
             new_company_balance = company_previous_balance - total_amount
@@ -1333,11 +1395,12 @@ class StockSerializer(serializers.ModelSerializer):
     zone_name = serializers.CharField(source='zone.name', read_only=True)
     category_name = serializers.CharField(source='product.category.name', read_only=True)
     unit_name = serializers.CharField(source='product.unit.name', read_only=True)
+    unit_symbol = serializers.CharField(source='product.unit.symbol', read_only=True)
 
     class Meta:
         model = Stock
         fields = ['id', 'product', 'product_name', 'zone', 'zone_name', 'quantity', 
-                 'category_name', 'unit_name', 'updated_at']
+                 'category_name', 'unit_name', 'unit_symbol', 'updated_at']
 
 class CashReceiptSerializer(serializers.ModelSerializer):
     class Meta:

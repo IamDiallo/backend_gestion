@@ -1122,8 +1122,14 @@ class StockSupplyViewSet(viewsets.ModelViewSet):
         except Account.DoesNotExist:
             raise ValueError("No account found for this supplier")
 
-        # Company account (optional, e.g., cash/bank account)
-        company_account = Account.objects.get(account_type='company', name='Main Account')  # adjust as needed
+        # Company account - use first available cash, bank, or internal account
+        company_account = Account.objects.filter(
+            account_type__in=['cash', 'bank', 'internal'],
+            is_active=True
+        ).first()
+        
+        if not company_account:
+            raise ValueError("No active cash, bank, or internal account found for supply transactions")
 
         # Last balances
         last_supplier_balance = AccountStatement.objects.filter(account=supplier_account).order_by('-date', '-id').first()
