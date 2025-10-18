@@ -24,7 +24,19 @@ from rest_framework_simplejwt.views import (
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/', include('gestion_api.urls')),
+    
+    # New domain-driven API endpoints (primary)
+    path('api/core/', include('apps.core.urls')),
+    path('api/settings/', include('apps.app_settings.urls')),
+    path('api/partners/', include('apps.partners.urls')),
+    path('api/inventory/', include('apps.inventory.urls')),
+    path('api/sales/', include('apps.sales.urls')),
+    path('api/production/', include('apps.production.urls')),
+    path('api/treasury/', include('apps.treasury.urls')),
+    path('api/dashboard/', include('apps.dashboard.urls')),  # Dashboard aggregation layer
+    
+    # Legacy API endpoint - DEPRECATED - Use domain-specific endpoints instead
+    # path('api/legacy/', include('gestion_api.urls')),  # DEPRECATED
 
     # JWT authentication endpoints
     path('api/token/', TokenObtainPairView.as_view(), name='token_obtain_pair'),

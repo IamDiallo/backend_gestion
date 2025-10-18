@@ -8,6 +8,8 @@ from django.dispatch import receiver
 from decimal import Decimal
 
 # I. User Profiles
+# MIGRATED TO apps.core
+"""
 class UserProfile(models.Model):
     ROLE_CHOICES = (
         ('admin', 'Administrator'),
@@ -28,12 +30,9 @@ class UserProfile(models.Model):
         return f"{self.user.username} - {self.role}"
 
     def has_permission(self, permission_code):
-        """Check if user has a specific permission through Django's permission system"""
-        # Admin users have all permissions
         if self.role == 'admin':
             return True
             
-        # Check app_label and codename from the permission code
         if '.' in permission_code:
             app_label, codename = permission_code.split('.')
             return self.user.has_perm(f"{app_label}.{codename}")
@@ -41,44 +40,27 @@ class UserProfile(models.Model):
             return self.user.has_perm(permission_code)
     
     def get_all_permissions(self):
-        """Get all permissions for this user, including from group"""
-        # Start with direct user permissions
         permissions = set()
         
-        # Add all direct permissions assigned to the user
         for perm in self.user.user_permissions.all():
             permissions.add(f"{perm.content_type.app_label}.{perm.codename}")
         
-        # Add permissions from Django groups
         for group in self.user.groups.all():
             for perm in group.permissions.all():
                 permissions.add(f"{perm.content_type.app_label}.{perm.codename}")
                 
         return permissions
+"""
+from apps.core.models import UserProfile
 
-# Signal to create or update user profile when user is saved
-@receiver(post_save, sender=User)
-def create_or_update_user_profile(sender, instance, created, **kwargs):
-    """
-    Create or update the user profile whenever the User model is saved
-    """
-    print(f"Signal triggered for user {instance.username} - created={created}")
-    try:
-        if created:
-            # For new users, create a profile
-            profile = UserProfile.objects.create(user=instance)
-            print(f"Created new profile for {instance.username}: {profile.id}")
-        else:
-            # For existing users, get or create the profile
-            profile, profile_created = UserProfile.objects.get_or_create(user=instance)
-            if profile_created:
-                print(f"Created missing profile for existing user {instance.username}: {profile.id}")
-            else:
-                print(f"Found existing profile for {instance.username}: {profile.id}")
-    except Exception as e:
-        print(f"Error in create_or_update_user_profile signal: {e}")
+# Signal moved to apps.core.signals - using core app's signal handler
+# This avoids duplicate profile creation
 
 # II. Parameters
+# MIGRATED TO apps.app_settings - Models commented out to avoid conflicts
+# Uncomment if you need to rollback the migration
+
+"""
 class ProductCategory(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
@@ -118,15 +100,17 @@ class UnitOfMeasure(models.Model):
     
     def __str__(self):
         return f"{self.name} ({self.symbol})"
-    
-    class Meta:
-        verbose_name = "Unité de mesure"
-        verbose_name_plural = "Unités de mesure"
+"""
 
+# Import from new app_settings location
+from apps.app_settings.models import ProductCategory, ExpenseCategory, UnitOfMeasure
+
+# MIGRATED TO apps.core
+"""
 class Zone(models.Model):
     name = models.CharField(max_length=100)
     address = models.TextField(blank=True)
-    description = models.TextField(blank=True, null=True)  # Ensure this field exists
+    description = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True, null=True)
     updated_at = models.DateTimeField(auto_now=True, null=True)
@@ -138,7 +122,11 @@ class Zone(models.Model):
     class Meta:
         verbose_name = "Zone/Magasin"
         verbose_name_plural = "Zones/Magasins"
+"""
+from apps.core.models import Zone
 
+# MIGRATED TO apps.app_settings - Models commented out to avoid conflicts
+"""
 class Currency(models.Model):
     name = models.CharField(max_length=100)
     code = models.CharField(max_length=3, unique=True)
@@ -165,7 +153,13 @@ class PaymentMethod(models.Model):
     class Meta:
         verbose_name = "Mode de paiement"
         verbose_name_plural = "Modes de paiement"
+"""
 
+# Import from new app_settings location
+from apps.app_settings.models import Currency, PaymentMethod
+
+# MIGRATED TO apps.treasury
+"""
 class Account(models.Model):
     ACCOUNT_TYPES = [
         ('internal', 'Compte Interne'),
@@ -189,7 +183,11 @@ class Account(models.Model):
     class Meta:
         verbose_name = "Compte"
         verbose_name_plural = "Comptes"
+"""
+from apps.treasury.models import Account
 
+# MIGRATED TO apps.app_settings
+"""
 class PriceGroup(models.Model):
     name = models.CharField(max_length=100)
     discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
@@ -201,8 +199,14 @@ class PriceGroup(models.Model):
     class Meta:
         verbose_name = "Groupe de prix"
         verbose_name_plural = "Groupes de prix"
+"""
+
+# Import from new app_settings location
+from apps.app_settings.models import PriceGroup
 
 # III. Products
+# MIGRATED TO apps.inventory
+"""
 class Product(models.Model):
     name = models.CharField(max_length=100)
     reference = models.CharField(max_length=50, unique=True, blank=True, null=True)
@@ -231,28 +235,21 @@ class Product(models.Model):
         super().save(*args, **kwargs)
 
     def generate_reference(self):
-        # Get the first two characters of the category name as prefix
         if self.category and self.category.name:
-            # Get first two characters, ensuring we have at least two by padding with 'X' if needed
             category_name = self.category.name.strip()
             if not category_name:
-                prefix = "PR"  # Default if category name is empty
+                prefix = "PR"
             else:
                 prefix = category_name[:2].upper().ljust(2, 'X')
         else:
-            prefix = "PR"  # Default if no category
+            prefix = "PR"
             
-        # Get the last ID and increment by 1
         last_product = Product.objects.order_by('-id').first()
         next_id = 1 if not last_product else last_product.id + 1
         
-        # Format: AA-0001 (where AA are the first two letters of category name)
         return f"{prefix}-{next_id:04d}"
     
     def generate_qr_code_data(self):
-        """
-        Generate the data to be encoded in the QR code
-        """
         return {
             'id': self.id,
             'name': self.name,
@@ -265,9 +262,13 @@ class Product(models.Model):
     class Meta:
         verbose_name = "Produit"
         verbose_name_plural = "Produits"
+"""
+from apps.inventory.models import Product
 
 
 # IV. Third Parties
+# MIGRATED TO apps.partners
+"""
 class Client(models.Model):
     name = models.CharField(max_length=100)
     contact_person = models.CharField(max_length=100)
@@ -284,7 +285,11 @@ class Client(models.Model):
     class Meta:
         verbose_name = "Client"
         verbose_name_plural = "Clients"
+"""
+from apps.partners.models import Client
 
+# MIGRATED TO apps.partners
+"""
 class Supplier(models.Model):
     name = models.CharField(max_length=200)  # Fix: changed maxlength to max_length
     contact_person = models.CharField(max_length=100, blank=True)  # Fix: changed maxlength to max_length
@@ -301,11 +306,12 @@ class Supplier(models.Model):
     class Meta:
         verbose_name = "Fournisseur"
         verbose_name_plural = "Fournisseurs"
+"""
+from apps.partners.models import Supplier
 
+# MIGRATED TO apps.partners
+"""
 class Employee(models.Model):
-    """
-    Modèle pour les employés
-    """
     name = models.CharField(max_length=100)
     position = models.CharField(max_length=100)
     department = models.CharField(max_length=100, default="Général")
@@ -322,8 +328,12 @@ class Employee(models.Model):
     class Meta:
         verbose_name = "Employé"
         verbose_name_plural = "Employés"
+"""
+from apps.partners.models import Employee
 
 # V. Stock
+# MIGRATED TO apps.inventory
+"""
 class Stock(models.Model):
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='stocks')
     zone = models.ForeignKey(Zone, on_delete=models.CASCADE, related_name='stocks')
@@ -333,7 +343,6 @@ class Stock(models.Model):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     
     def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
         try:
             unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
             unit_symbol = unit_obj.symbol
@@ -346,7 +355,11 @@ class Stock(models.Model):
         verbose_name = "Stock"
         verbose_name_plural = "Stocks"
         unique_together = ('product', 'zone')
+"""
+from apps.inventory.models import Stock
 
+# MIGRATED TO apps.inventory
+"""
 class Supply(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='supplies')
@@ -362,7 +375,11 @@ class Supply(models.Model):
     class Meta:
         verbose_name = "Approvisionnement"
         verbose_name_plural = "Approvisionnements"
+"""
+from apps.inventory.models import Supply
 
+# MIGRATED TO apps.inventory
+"""
 class SupplyItem(models.Model):
     supply = models.ForeignKey(Supply, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
@@ -371,9 +388,8 @@ class SupplyItem(models.Model):
     total_price = models.DecimalField(max_digits=15, decimal_places=2)
     
     def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
         try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)  # Fixed missing parenthesis
+            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
             unit_symbol = unit_obj.symbol
         except (UnitOfMeasure.DoesNotExist, AttributeError, Exception):
             unit_symbol = ""
@@ -383,7 +399,12 @@ class SupplyItem(models.Model):
     class Meta:
         verbose_name = "Élément d'approvisionnement"
         verbose_name_plural = "Éléments d'approvisionnement"
+"""
+from apps.inventory.models import SupplyItem
 
+# IV. Inventory
+# MIGRATED TO apps.inventory - Models commented out to avoid conflicts
+"""
 class ProductTransfer(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     source_zone = models.ForeignKey(Zone, on_delete=models.CASCADE, related_name='transfers_out')
@@ -417,198 +438,26 @@ class ProductTransferItem(models.Model):
     class Meta:
         verbose_name = "Élément de transfert"
         verbose_name_plural = "Éléments de transfert"
-
-class Inventory(models.Model):
-    """
-    Inventaire de stock
-    """
-    reference = models.CharField(max_length=20, unique=True, blank=True, null=True)
-    zone = models.ForeignKey(Zone, on_delete=models.PROTECT)
-    date = models.DateField()
-    status = models.CharField(max_length=20, choices=[
-        ('draft', 'Brouillon'),
-        ('in_progress', 'En cours'),
-        ('completed', 'Terminé'),
-        ('cancelled', 'Annulé')
-    ])
-    notes = models.TextField(blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"Inventaire {self.reference} - {self.zone.name}"
-    
-    class Meta:
-        verbose_name = "Inventaire"
-        verbose_name_plural = "Inventaires"
-
-class InventoryItem(models.Model):
-    """
-    Éléments d'un inventaire
-    """
-    inventory = models.ForeignKey(Inventory, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('Product', on_delete=models.PROTECT)
-    expected_quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], default=0)
-    actual_quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], default=0)
-    difference = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    notes = models.TextField(blank=True)
-    
-    def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
-        try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
-            unit_symbol = unit_obj.symbol
-        except (UnitOfMeasure.DoesNotExist, AttributeError, Exception):
-            unit_symbol = ""
-            
-        return f"{self.product.name} (Attendu: {self.expected_quantity} {unit_symbol}, Réel: {self.actual_quantity} {unit_symbol})"
-    
-    class Meta:
-        verbose_name = "Élément d'inventaire"
-        verbose_name_plural = "Éléments d'inventaire"
-
-class StockReturn(models.Model):
-    STATUS_CHOICES = [
-        ('pending', 'En attente'),
-        ('approved', 'Approuvé'),
-        ('rejected', 'Rejeté'),
-    ]
-    
-    reference = models.CharField(max_length=50, unique=True)
-    sale = models.ForeignKey('Sale', on_delete=models.PROTECT)
-    date = models.DateField()
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    reason = models.TextField()
-    notes = models.TextField(blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True, null=True)
-    updated_at = models.DateTimeField(auto_now=True, null=True)
-    
-    def __str__(self):
-        return f"Return {self.reference} - {self.sale.reference}"
-    
-    class Meta:
-        verbose_name = "Retour de stock"
-        verbose_name_plural = "Retours de stock"
-
-class StockReturnItem(models.Model):
-    stock_return = models.ForeignKey(StockReturn, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey(Product, on_delete=models.PROTECT)
-    quantity = models.DecimalField(max_digits=10, decimal_places=2)
-    notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True, null=True)
-    updated_at = models.DateTimeField(auto_now=True, null=True)
-    
-    def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
-        try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
-            unit_symbol = unit_obj.symbol
-        except (UnitOfMeasure.DoesNotExist, AttributeError, Exception):
-            unit_symbol = ""
-            
-        return f"{self.product.name} - {self.quantity} {unit_symbol}"
-    
-    class Meta:
-        verbose_name = "Élément de retour"
-        verbose_name_plural = "Éléments de retour"
+"""
+from apps.inventory.models import (
+    StockTransfer, StockTransferItem, Inventory, InventoryItem, 
+    StockReturn, StockReturnItem, ProductTransfer, ProductTransferItem
+)
 
 # VI. Sales
+# MIGRATED TO apps.sales
+"""
 class Sale(models.Model):
-    STATUS_CHOICES = [
-        ('draft', 'Brouillon'),
-        ('pending', 'En attente'),
-        ('confirmed', 'Confirmé'),
-        ('payment_pending', 'Paiement en attente'),
-        ('partially_paid', 'Partiellement payé'),
-        ('paid', 'Payé'),
-        ('shipped', 'Expédié'),
-        ('delivered', 'Livré'),
-        ('completed', 'Terminé'),
-        ('cancelled', 'Annulé'),
-    ]
-    
-    PAYMENT_STATUS_CHOICES = [
-        ('unpaid', 'Non payé'),
-        ('partially_paid', 'Partiellement payé'),
-        ('paid', 'Payé'),
-        ('overpaid', 'Surpayé')
-    ]
-    
-    WORKFLOW_STATE_CHOICES = [
-        ('draft', 'Brouillon'),
-        ('pending', 'En attente'),
-        ('confirmed', 'Confirmé'),
-        ('payment_pending', 'Paiement en attente'),
-        ('partially_paid', 'Partiellement payé'),
-        ('paid', 'Payé'),
-        ('shipped', 'Expédié'),
-        ('delivered', 'Livré'),        
-        ('completed', 'Terminé'),
-        ('cancelled', 'Annulé')
-    ]
-    reference = models.CharField(max_length=50, unique=True)
-    client = models.ForeignKey(Client, on_delete=models.PROTECT)
-    zone = models.ForeignKey(Zone, on_delete=models.PROTECT)
-    date = models.DateField()
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
-    payment_status = models.CharField(max_length=20, choices=PAYMENT_STATUS_CHOICES, default='unpaid')
-    workflow_state = models.CharField(max_length=50, choices=WORKFLOW_STATE_CHOICES, default='draft')
-    delivery_notes = models.ManyToManyField('DeliveryNote', related_name='sales', blank=True)
-    subtotal = models.DecimalField(max_digits=15, decimal_places=2)
-    discount_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
-    tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
-    total_amount = models.DecimalField(max_digits=15, decimal_places=2)
-    paid_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0) 
-    remaining_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0, null=True, blank=True)
-    notes = models.TextField(blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    def __str__(self):
-        return f"Sale {self.reference} - {self.client.name}"
-    
-    def save(self, *args, **kwargs):
-        # Only generate a reference if this is a new object (no ID yet) and reference is empty
-        if not self.pk and not self.reference:
-            from django.db import transaction
-            
-            # Use a transaction with select_for_update to prevent race conditions
-            with transaction.atomic():
-                # Get the current year
-                year = timezone.now().year
-                # Lock the table to prevent concurrent reference generation
-                last_sale = Sale.objects.filter(reference__startswith=f"VNT-{year}-").select_for_update().order_by('-reference').first()
-                
-                if last_sale:
-                    try:
-                        # Extract the number part and increment
-                        last_number = int(last_sale.reference.split('-')[-1])
-                        next_number = last_number + 1
-                    except (ValueError, IndexError):
-                        # If parsing fails, count all sales for this year and add 1
-                        count = Sale.objects.filter(reference__startswith=f"VNT-{year}-").count()
-                        next_number = count + 1
-                else:
-                    # First sale of the year
-                    next_number = 1
-                
-                # Format the reference (ensure it's at least 3 digits)
-                self.reference = f"VNT-{year}-{next_number:03d}"
-                
-                # Double check that this reference isn't already used 
-                # (extra safety check)
-                while Sale.objects.filter(reference=self.reference).exists():
-                    next_number += 1
-                    self.reference = f"VNT-{year}-{next_number:03d}"
-        
-        super().save(*args, **kwargs)
-    
+    STATUS_CHOICES = [...]
+    [Full model definition omitted - 96 lines]
     class Meta:
         verbose_name = "Vente"
         verbose_name_plural = "Ventes"
+"""
+from apps.sales.models import Sale
 
+# MIGRATED TO apps.sales
+"""
 class SaleItem(models.Model):
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
@@ -618,7 +467,6 @@ class SaleItem(models.Model):
     total_price = models.DecimalField(max_digits=15, decimal_places=2)
     
     def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
         try:
             unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
             unit_symbol = unit_obj.symbol
@@ -630,8 +478,13 @@ class SaleItem(models.Model):
     class Meta:
         verbose_name = "Élément de vente"
         verbose_name_plural = "Éléments de vente"
+"""
+from apps.sales.models import SaleItem
 
 # VII. Production
+# VII. Production
+# MIGRATED TO apps.production
+"""
 class Production(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='productions')
@@ -641,39 +494,29 @@ class Production(models.Model):
     notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
-    def __str__(self):
-        return f"Production {self.reference} - {self.product.name}"
-    
     class Meta:
         verbose_name = "Production"
         verbose_name_plural = "Productions"
+"""
+from apps.production.models import Production
 
+# MIGRATED TO apps.production
+"""
 class ProductionMaterial(models.Model):
     production = models.ForeignKey(Production, on_delete=models.CASCADE, related_name='materials')
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.DecimalField(max_digits=12, decimal_places=2)
     
-    def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
-        try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
-            unit_symbol = unit_obj.symbol
-        except UnitOfMeasure.DoesNotExist:
-            unit_symbol = ""
-        except Exception:
-            unit_symbol = "units"
-            
-        return f"{self.product.name} - {self.quantity} {unit_symbol}"
-    
     class Meta:
         verbose_name = "Matière première utilisée"
         verbose_name_plural = "Matières premières utilisées"
+"""
+from apps.production.models import ProductionMaterial
 
 # VIII. Treasury
+# MIGRATED TO apps.treasury
+"""
 class Expense(models.Model):
-    """
-    Modèle pour les dépenses
-    """
     reference = models.CharField(max_length=20, unique=True)
     category = models.ForeignKey(ExpenseCategory, on_delete=models.PROTECT)
     account = models.ForeignKey(Account, on_delete=models.PROTECT)
@@ -697,11 +540,12 @@ class Expense(models.Model):
     class Meta:
         verbose_name = "Dépense"
         verbose_name_plural = "Dépenses"
+"""
+from apps.treasury.models import Expense
 
+# MIGRATED TO apps.treasury
+"""
 class ClientPayment(models.Model):
-    """
-    Règlement client
-    """
     reference = models.CharField(max_length=20, unique=True)
     client = models.ForeignKey(Client, on_delete=models.PROTECT)
     account = models.ForeignKey(Account, on_delete=models.PROTECT)
@@ -718,11 +562,12 @@ class ClientPayment(models.Model):
     class Meta:
         verbose_name = "Règlement client"
         verbose_name_plural = "Règlements clients"
+"""
+from apps.treasury.models import ClientPayment
 
+# MIGRATED TO apps.treasury
+"""
 class SupplierPayment(models.Model):
-    """
-    Règlement fournisseur
-    """
     reference = models.CharField(max_length=20, unique=True)
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT)
     account = models.ForeignKey(Account, on_delete=models.PROTECT)
@@ -739,11 +584,12 @@ class SupplierPayment(models.Model):
     class Meta:
         verbose_name = "Règlement fournisseur"
         verbose_name_plural = "Règlements fournisseurs"
+"""
+from apps.treasury.models import SupplierPayment
 
+# MIGRATED TO apps.treasury
+"""
 class AccountTransfer(models.Model):
-    """
-    Virement entre comptes
-    """
     reference = models.CharField(max_length=20, unique=True)
     from_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name='transfers_from', null=True)
     to_account = models.ForeignKey(Account, on_delete=models.PROTECT, related_name='transfers_to', null=True)
@@ -760,11 +606,12 @@ class AccountTransfer(models.Model):
     class Meta:
         verbose_name = "Virement"
         verbose_name_plural = "Virements"
+"""
+from apps.treasury.models import AccountTransfer
 
+# MIGRATED TO apps.treasury
+"""
 class CashReceipt(models.Model):
-    """
-    Encaissement
-    """
     reference = models.CharField(max_length=20, unique=True)
     account = models.ForeignKey(Account, on_delete=models.PROTECT, null=True)
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, null=True, blank=True, related_name='receipts')
@@ -783,12 +630,13 @@ class CashReceipt(models.Model):
     class Meta:
         verbose_name = "Encaissement"
         verbose_name_plural = "Encaissements"
+"""
+from apps.treasury.models import CashReceipt
 
 
+# MIGRATED TO apps.treasury
+"""
 class SupplierCashPayment(models.Model):
-    """
-    Paiement aux fournisseurs (décaissement)
-    """
     reference = models.CharField(max_length=50, unique=True)
     account = models.ForeignKey(Account, on_delete=models.PROTECT, null=True)  # Company account paying
     supply = models.ForeignKey('StockSupply', on_delete=models.CASCADE, null=True, blank=True, related_name='payments')
@@ -807,12 +655,13 @@ class SupplierCashPayment(models.Model):
     class Meta:
         verbose_name = "Paiement fournisseur"
         verbose_name_plural = "Paiements fournisseurs"
+"""
+from apps.treasury.models import SupplierCashPayment
 
 
+# MIGRATED TO apps.treasury
+"""
 class AccountStatement(models.Model):
-    """
-    Relevé de compte pour suivre les mouvements
-    """
     account = models.ForeignKey(Account, on_delete=models.PROTECT)
     date = models.DateField()
     transaction_type = models.CharField(max_length=20, choices=[
@@ -840,59 +689,47 @@ class AccountStatement(models.Model):
         verbose_name = "Mouvement de compte"
         verbose_name_plural = "Mouvements de compte"
         ordering = ['account', '-date']
+"""
+from apps.treasury.models import AccountStatement
 
 # VII. Vente - Modèles supplémentaires
+# MIGRATED TO apps.sales
+"""
 class DeliveryNote(models.Model):
-    """
-    Bon de livraison pour les commandes
-    """
     reference = models.CharField(max_length=20, unique=True)
     client = models.ForeignKey(Client, on_delete=models.PROTECT)
     zone = models.ForeignKey(Zone, on_delete=models.PROTECT)
     date = models.DateField()
-    status = models.CharField(max_length=20, choices=[
-        ('draft', 'Brouillon'),
-        ('confirmed', 'Confirmé'),
-        ('delivered', 'Livré'),
-        ('cancelled', 'Annulé')
-    ])
+    status = models.CharField(max_length=20, choices=[...])
     notes = models.TextField(blank=True)
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     
-    def __str__(self):
-        return f"Livraison {self.reference} - {self.client.name}"
-    
     class Meta:
         verbose_name = "Bon de livraison"
         verbose_name_plural = "Bons de livraison"
+"""
+from apps.sales.models import DeliveryNote
 
+# MIGRATED TO apps.sales
+"""
 class DeliveryNoteItem(models.Model):
-    """
-    Éléments d'un bon de livraison
-    """
     delivery_note = models.ForeignKey(DeliveryNote, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     
-    def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
-        try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
-            unit_symbol = unit_obj.symbol
-        except (UnitOfMeasure.DoesNotExist, AttributeError, Exception):
-            unit_symbol = ""
-            
-        return f"{self.product.name} ({self.quantity} {unit_symbol})"
-    
     class Meta:
         verbose_name = "Élément de livraison"
         verbose_name_plural = "Éléments de livraison"
+"""
+from apps.sales.models import DeliveryNoteItem
 
+# MIGRATED TO apps.app_settings
+"""
 class ChargeType(models.Model):
-    """
+    \"\"\"
     Type de charge pour les ventes
-    """
+    \"\"\"
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
@@ -903,28 +740,29 @@ class ChargeType(models.Model):
     class Meta:
         verbose_name = "Type de charge"
         verbose_name_plural = "Types de charge"
+"""
 
+# Import from new app_settings location
+from apps.app_settings.models import ChargeType
+
+# MIGRATED TO apps.sales
+"""
 class SaleCharge(models.Model):
-    """
-    Charges additionnelles sur une vente
-    """
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='charges')
     charge_type = models.ForeignKey(ChargeType, on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     description = models.TextField(blank=True)
     
-    def __str__(self):
-        return f"{self.charge_type.name} - {self.amount}"
-    
     class Meta:
         verbose_name = "Charge de vente"
         verbose_name_plural = "Charges de vente"
+"""
+from apps.sales.models import SaleCharge
 
 # V. Tiers - Modèles supplémentaires
+# MIGRATED TO apps.partners
+"""
 class ClientGroup(models.Model):
-    """
-    Groupe de clients
-    """
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=0)
@@ -936,15 +774,15 @@ class ClientGroup(models.Model):
     class Meta:
         verbose_name = "Groupe de clients"
         verbose_name_plural = "Groupes de clients"
+"""
+from apps.partners.models import ClientGroup
 
 # VI. Stocks
+# MIGRATED TO apps.inventory
+"""
 class StockSupply(models.Model):
-    """
-    Modèle pour les approvisionnements de stock
-    """
-    # Allow blank and null temporarily for backend generation
     reference = models.CharField(max_length=20, unique=True, blank=True, null=True)
-    supplier = models.ForeignKey('Supplier', on_delete=models.PROTECT)
+    supplier = models.ForeignKey('partners.Supplier', on_delete=models.PROTECT)
     zone = models.ForeignKey(Zone, on_delete=models.PROTECT)
     date = models.DateField()
     status = models.CharField(max_length=20, choices=[
@@ -953,7 +791,6 @@ class StockSupply(models.Model):
         ('received', 'Reçu'),
         ('cancelled', 'Annulé')
     ])
-    # Payment tracking fields
     total_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     remaining_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
@@ -975,12 +812,10 @@ class StockSupply(models.Model):
         return f"Approvisionnement {self.reference} - {self.supplier.name}"
     
     def get_total_amount(self):
-        """Calculate total amount from supply items"""
         from django.db.models import Sum
         return self.items.aggregate(total=Sum('total_price'))['total'] or Decimal('0')
     
     def update_payment_status(self):
-        """Update payment status based on amounts"""
         if self.paid_amount >= self.total_amount and self.total_amount > 0:
             self.payment_status = 'paid'
         elif self.paid_amount > 0:
@@ -992,11 +827,12 @@ class StockSupply(models.Model):
     class Meta:
         verbose_name = "Approvisionnement"
         verbose_name_plural = "Approvisionnements"
+"""
+from apps.inventory.models import StockSupply
 
+# MIGRATED TO apps.inventory
+"""
 class StockSupplyItem(models.Model):
-    """
-    Éléments d'un approvisionnement
-    """
     supply = models.ForeignKey(StockSupply, on_delete=models.CASCADE, related_name='items')
     product = models.ForeignKey('Product', on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
@@ -1005,7 +841,6 @@ class StockSupplyItem(models.Model):
     total_price = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
     
     def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
         try:
             unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
             unit_symbol = unit_obj.symbol
@@ -1017,11 +852,15 @@ class StockSupplyItem(models.Model):
     class Meta:
         verbose_name = "Élément d'approvisionnement"
         verbose_name_plural = "Éléments d'approvisionnement"
+"""
+from apps.inventory.models import StockSupplyItem
 
+# MIGRATED TO apps.inventory - Models commented out to avoid conflicts
+"""
 class StockTransfer(models.Model):
-    """
+    \"\"\"
     Transfert de produits entre zones
-    """
+    \"\"\"
     reference = models.CharField(max_length=20, unique=True, blank=True, null=True)
     from_zone = models.ForeignKey(Zone, on_delete=models.PROTECT, related_name='transfers_from')
     to_zone = models.ForeignKey(Zone, on_delete=models.PROTECT, related_name='transfers_to')
@@ -1044,11 +883,11 @@ class StockTransfer(models.Model):
         verbose_name_plural = "Transferts de stock"
 
 class StockTransferItem(models.Model):
-    """
+    \"\"\"
     Éléments d'un transfert de stock
-    """
+    \"\"\"
     transfer = models.ForeignKey(StockTransfer, on_delete=models.CASCADE, related_name='items')
-    product = models.ForeignKey('Product', on_delete=models.PROTECT)
+    product = models.ForeignKey('inventory.Product', on_delete=models.PROTECT)
     quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     transferred_quantity = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)], default=0)
     
@@ -1065,11 +904,12 @@ class StockTransferItem(models.Model):
     class Meta:
         verbose_name = "Élément de transfert"
         verbose_name_plural = "Éléments de transfert"
+"""
+from apps.inventory.models import StockTransfer, StockTransferItem
 
+# MIGRATED TO apps.inventory
+"""
 class StockCard(models.Model):
-    """
-    Fiche de stock pour suivre les mouvements de stock
-    """
     product = models.ForeignKey('Product', on_delete=models.PROTECT)
     zone = models.ForeignKey(Zone, on_delete=models.PROTECT)
     date = models.DateField()
@@ -1082,7 +922,7 @@ class StockCard(models.Model):
         ('production', 'Production'),
         ('return', 'Retour')
     ])
-    reference = models.CharField(max_length=50)  # Référence du document source
+    reference = models.CharField(max_length=50)
     quantity_in = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     quantity_out = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
@@ -1094,98 +934,47 @@ class StockCard(models.Model):
         verbose_name = "Fiche de stock"
         verbose_name_plural = "Fiches de stock"
         ordering = ['product', 'zone', '-date']
+"""
+from apps.inventory.models import StockCard
 
+# MIGRATED TO apps.sales
+"""
 class Invoice(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     sale = models.ForeignKey(Sale, on_delete=models.CASCADE, related_name='invoices')
     date = models.DateField()
     due_date = models.DateField()
-    status = models.CharField(
-        max_length=20, 
-        choices=[
-            ('draft', 'Brouillon'),
-            ('sent', 'Envoyé'),
-            ('paid', 'Payé'),
-            ('overdue', 'En retard'),
-            ('cancelled', 'Annulé')
-        ],
-        default='draft'
-    )
+    status = models.CharField(max_length=20, choices=[...])
     amount = models.DecimalField(max_digits=15, decimal_places=2)
     paid_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     balance = models.DecimalField(max_digits=15, decimal_places=2)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now_add=True)
+"""
+from apps.sales.models import Invoice
 
-    def __str__(self):
-        return self.reference
-
-
+# MIGRATED TO apps.sales
+"""
 class Quote(models.Model):
     reference = models.CharField(max_length=50, unique=True)
     client = models.ForeignKey(Client, on_delete=models.PROTECT, related_name='quotes')
     date = models.DateField()
     expiry_date = models.DateField()
-    status = models.CharField(
-        max_length=20,
-        choices=[
-            ('draft', 'Brouillon'),
-            ('sent', 'Envoyé'),
-            ('accepted', 'Accepté'),
-            ('rejected', 'Rejeté'),
-            ('expired', 'Expiré')
-        ],
-        default='draft'
-    )
-    is_converted = models.BooleanField(default=False, help_text="Si ce devis a été converti en vente")
+    status = models.CharField(max_length=20, choices=[...])
+    is_converted = models.BooleanField(default=False)
     subtotal = models.DecimalField(max_digits=15, decimal_places=2)
     tax_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
     total_amount = models.DecimalField(max_digits=15, decimal_places=2)
     notes = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    [save method with auto-generated DEV-YYYY-NNN reference]
+"""
+from apps.sales.models import Quote
 
-    def save(self, *args, **kwargs):
-        # Only generate a reference if this is a new object (no ID yet) and reference is empty
-        if not self.pk and not self.reference:
-            from django.db import transaction
-            
-            # Use a transaction with select_for_update to prevent race conditions
-            with transaction.atomic():
-                # Get the current year
-                year = timezone.now().year
-                # Lock the table to prevent concurrent reference generation
-                last_quote = Quote.objects.filter(reference__startswith=f"DEV-{year}-").select_for_update().order_by('-reference').first()
-                
-                if last_quote:
-                    try:
-                        # Extract the number part and increment
-                        last_number = int(last_quote.reference.split('-')[-1])
-                        next_number = last_number + 1
-                    except (ValueError, IndexError):
-                        # If parsing fails, count all quotes for this year and add 1
-                        count = Quote.objects.filter(reference__startswith=f"DEV-{year}-").count()
-                        next_number = count + 1
-                else:
-                    # First quote of the year
-                    next_number = 1
-                
-                # Format the reference (ensure it's at least 3 digits)
-                self.reference = f"DEV-{year}-{next_number:03d}"
-                
-                # Double check that this reference isn't already used 
-                # (extra safety check)
-                while Quote.objects.filter(reference=self.reference).exists():
-                    next_number += 1
-                    self.reference = f"DEV-{year}-{next_number:03d}"
-        
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return self.reference
-
-
+# MIGRATED TO apps.sales
+"""
 class QuoteItem(models.Model):
     quote = models.ForeignKey(Quote, related_name='items', on_delete=models.CASCADE)
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
@@ -1195,32 +984,5 @@ class QuoteItem(models.Model):
     total_price = models.DecimalField(max_digits=15, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
-    def __str__(self):
-        # Fix: Get the UnitOfMeasure object using the unit ID from product
-        try:
-            unit_obj = UnitOfMeasure.objects.get(id=self.product.unit.id)
-            unit_symbol = unit_obj.symbol
-        except (UnitOfMeasure.DoesNotExist, AttributeError, Exception):
-            unit_symbol = ""
-            
-        return f"{self.quote.reference} - {self.product.name} ({self.quantity} {unit_symbol})"
-
-    """
-    Payment using client account balance
-    """
-    client = models.ForeignKey(Client, on_delete=models.PROTECT)
-    sale = models.ForeignKey(Sale, on_delete=models.CASCADE, null=True)
-    amount = models.DecimalField(max_digits=15, decimal_places=2, validators=[MinValueValidator(0)])
-    date = models.DateField()
-    reference = models.CharField(max_length=50)
-    description = models.TextField(blank=True)
-    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    
-    def __str__(self):
-        return f"Account Payment {self.reference} - {self.amount}"
-    
-    class Meta:
-        verbose_name = "Account Payment"
-        verbose_name_plural = "Account Payments"
+"""
+from apps.sales.models import QuoteItem

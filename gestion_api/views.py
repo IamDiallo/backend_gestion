@@ -16,16 +16,27 @@ from rest_framework.permissions import IsAuthenticated, BasePermission
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import (
-    Product, Client, Supplier, Sale, SaleItem, UserProfile, ProductCategory,
-    Production, ProductionMaterial, StockSupply, StockSupplyItem, StockTransfer,
-    StockTransferItem, Inventory, InventoryItem, StockCard, UnitOfMeasure,
-    Zone, Currency, PaymentMethod, Account, PriceGroup, 
-    ExpenseCategory, Expense, ClientPayment, SupplierPayment, AccountTransfer, 
-    Stock, DeliveryNote,
-    DeliveryNoteItem, ChargeType, SaleCharge, Employee, ClientGroup,
-    Invoice, Quote, QuoteItem, CashReceipt, SupplierCashPayment, AccountStatement
+# Import models from new domain apps
+from apps.app_settings.models import (
+    ProductCategory, ExpenseCategory, UnitOfMeasure, Currency, 
+    PaymentMethod, PriceGroup, ChargeType
 )
+from apps.treasury.models import (
+    Account, Expense, ClientPayment, SupplierPayment, AccountTransfer,
+    CashReceipt, SupplierCashPayment, AccountStatement
+)
+from apps.partners.models import Client, Supplier, Employee, ClientGroup
+from apps.inventory.models import Product, Stock, StockSupply, StockSupplyItem, StockCard
+from apps.core.models import UserProfile, Zone
+from apps.sales.models import (
+    Sale, SaleItem, DeliveryNote, DeliveryNoteItem, 
+    SaleCharge, Invoice, Quote, QuoteItem
+)
+from apps.production.models import Production, ProductionMaterial
+
+# Import legacy models still in gestion_api
+from .models import StockTransfer, StockTransferItem, Inventory, InventoryItem
+
 from .serializers import (
     ProductSerializer, ClientSerializer, SupplierSerializer, SaleSerializer, 
     UserProfileSerializer, UserSerializer, PermissionSerializer, GroupSerializer, ZoneSerializer,

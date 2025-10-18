@@ -1,20 +1,31 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User, Group, Permission
 from django.utils import timezone
-from .models import (
-    Product, Client, Supplier, UserProfile, Zone, Sale, SaleItem, 
-    Currency, PaymentMethod, Account, PriceGroup, 
-    ExpenseCategory, Expense, ClientPayment, SupplierPayment, 
-    AccountTransfer, UnitOfMeasure, ProductCategory,
-    Production, ProductionMaterial, StockSupply, StockSupplyItem, 
-    StockTransfer, StockTransferItem, Inventory, InventoryItem,
-    StockCard, DeliveryNote, DeliveryNoteItem, ChargeType, SaleCharge,
-    Employee, ClientGroup, Invoice, Quote, QuoteItem, Stock,
-    CashReceipt, SupplierCashPayment, AccountStatement
-)
 from decimal import Decimal
 from django.db.models import Max
 from django.db import transaction
+
+# Import models from new domain apps
+from apps.app_settings.models import (
+    ProductCategory, ExpenseCategory, UnitOfMeasure, Currency, 
+    PaymentMethod, PriceGroup, ChargeType
+)
+from apps.treasury.models import (
+    Account, Expense, ClientPayment, SupplierPayment, AccountTransfer,
+    CashReceipt, SupplierCashPayment, AccountStatement
+)
+from apps.partners.models import Client, Supplier, Employee, ClientGroup
+from apps.inventory.models import Product, Stock, StockSupply, StockSupplyItem, StockCard
+from apps.core.models import UserProfile, Zone
+from apps.sales.models import (
+    Sale, SaleItem, DeliveryNote, DeliveryNoteItem, 
+    SaleCharge, Invoice, Quote, QuoteItem
+)
+from apps.production.models import Production, ProductionMaterial
+
+# Import legacy models still in gestion_api
+from .models import StockTransfer, StockTransferItem, Inventory, InventoryItem
+
 class PasswordChangeSerializer(serializers.Serializer):
     old_password = serializers.CharField(required=True)
     new_password = serializers.CharField(required=True, min_length=8)

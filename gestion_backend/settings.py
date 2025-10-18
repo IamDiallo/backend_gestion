@@ -46,8 +46,22 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     
-    # Local apps
-    'gestion_api',
+    # New domain-driven apps (modular architecture) - organized in apps/ folder
+    'apps.core.apps.CoreConfig',
+    'apps.partners.apps.PartnersConfig',
+    'apps.inventory.apps.InventoryConfig',
+    'apps.sales.apps.SalesConfig',
+    'apps.production.apps.ProductionConfig',
+    'apps.treasury.apps.TreasuryConfig',
+    'apps.app_settings.apps.AppSettingsConfig',
+    'apps.dashboard.apps.DashboardConfig',  # Dashboard aggregation layer
+    
+    # Legacy app - KEPT FOR MIGRATION DEPENDENCIES ONLY
+    # Models are commented out, but migrations are needed for domain apps
+    # Do not use gestion_api models - use domain apps instead
+        # Legacy app - KEPT FOR MIGRATION DEPENDENCIES ONLY
+    # 'gestion_api',  # DEPRECATED - All functionality moved to domain-driven apps
+
 ]
 
 MIDDLEWARE = [
