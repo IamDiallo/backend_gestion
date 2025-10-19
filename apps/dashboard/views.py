@@ -57,7 +57,12 @@ def dashboard_stats(request):
     
     # Get sales statistics
     sales_queryset = Sale.objects.filter(date__range=[date_from, date_to])
-    total_sales = sales_queryset.aggregate(
+    
+    # Count of sales
+    total_sales = sales_queryset.count()
+    
+    # Total revenue from sales
+    total_revenue = sales_queryset.aggregate(
         total=Coalesce(Sum('total_amount'), Value(0, output_field=DecimalField()))
     )['total']
     
@@ -67,7 +72,8 @@ def dashboard_stats(request):
     total_suppliers = Supplier.objects.filter(is_active=True).count()
     
     return Response({
-        'total_sales': float(total_sales),
+        'total_sales': total_sales,
+        'total_revenue': float(total_revenue),
         'total_clients': total_clients,
         'total_products': total_products,
         'total_suppliers': total_suppliers,
