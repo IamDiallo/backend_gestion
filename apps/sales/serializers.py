@@ -209,7 +209,7 @@ class QuoteItemSerializer(serializers.ModelSerializer):
 
 
 class QuoteSerializer(serializers.ModelSerializer):
-    items = QuoteItemSerializer(many=True, read_only=True)
+    items = QuoteItemSerializer(many=True)
     reference = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
@@ -218,3 +218,29 @@ class QuoteSerializer(serializers.ModelSerializer):
         extra_kwargs = {
             'reference': {'required': False, 'allow_blank': True}
         }
+    
+    def create(self, validated_data):
+        items_data = validated_data.pop('items')
+        quote = Quote.objects.create(**validated_data)
+
+        # Create QuoteItem records
+        for item_data in items_data:
+            QuoteItem.objects.create(quote=quote, **item_data)
+
+        return quote
+
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', [])
+        # Update the quote instance
+        instance = super().update(instance, validated_data)
+        
+        # Clear existing items and create new ones
+        instance.items.all().delete()
+        
+        # Create new items
+        for item_data in items_data:
+            if 'quote' in item_data:
+                item_data.pop('quote')
+            QuoteItem.objects.create(quote=instance, **item_data)
+        
+        return instance

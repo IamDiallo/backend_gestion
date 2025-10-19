@@ -94,7 +94,7 @@ class Migration(migrations.Migration):
                 ('client', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='treasury_cash_receipts', to='partners.client')),
                 ('created_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='treasury_cash_receipts_created', to=settings.AUTH_USER_MODEL)),
                 ('payment_method', models.ForeignKey(null=True, on_delete=django.db.models.deletion.PROTECT, related_name='treasury_cash_receipts', to='app_settings.paymentmethod')),
-                ('sale', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='receipts', to='gestion_api.sale')),
+                ('sale', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='receipts', to='sales.sale')),
             ],
             options={
                 'verbose_name': 'Encaissement',

@@ -33,6 +33,8 @@ class ProductViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def qr_code(self, request, pk=None):
         """Generate QR code for product"""
+        from django.http import HttpResponse
+        
         product = self.get_object()
         
         # Create QR code
@@ -42,22 +44,19 @@ class ProductViewSet(viewsets.ModelViewSet):
             box_size=10,
             border=4,
         )
-        qr.add_data(f"Product: {product.name} - Code: {product.code}")
+        qr.add_data(f"Product: {product.name} - Reference: {product.reference}")
         qr.make(fit=True)
         
         # Create image
         img = qr.make_image(fill_color="black", back_color="white")
         
-        # Convert to base64
+        # Save to buffer
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
-        image_base64 = base64.b64encode(buffer.getvalue()).decode()
         
-        return Response({
-            'qr_code': f'data:image/png;base64,{image_base64}',
-            'product': ProductSerializer(product).data
-        })
+        # Return as image response
+        return HttpResponse(buffer.getvalue(), content_type='image/png')
 
 
 class StockViewSet(viewsets.ModelViewSet):
