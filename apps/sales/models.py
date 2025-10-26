@@ -81,13 +81,13 @@ class Sale(models.Model):
         return f"Sale {self.reference} - {self.client.name}"
     
     def save(self, *args, **kwargs):
+        if self.status == 'confirmed':
+            self.status = 'payment_pending'
         if not self.pk and not self.reference:
             from django.db import transaction
-            
             with transaction.atomic():
                 year = timezone.now().year
                 last_sale = Sale.objects.filter(reference__startswith=f"VNT-{year}-").select_for_update().order_by('-reference').first()
-                
                 if last_sale:
                     try:
                         last_number = int(last_sale.reference.split('-')[-1])
@@ -97,13 +97,10 @@ class Sale(models.Model):
                         next_number = count + 1
                 else:
                     next_number = 1
-                
                 self.reference = f"VNT-{year}-{next_number:03d}"
-                
                 while Sale.objects.filter(reference=self.reference).exists():
                     next_number += 1
                     self.reference = f"VNT-{year}-{next_number:03d}"
-        
         super().save(*args, **kwargs)
     
     class Meta:

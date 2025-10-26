@@ -194,15 +194,15 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 from apps.sales.models import Sale
                 outstanding_sales = Sale.objects.filter(
                     client__account=account,
-                    payment_status__in=['partial', 'pending']
-                ).values('id', 'reference', 'total_amount', 'paid_amount', 'date')
+                    payment_status__in=['pending_paiement','unpaid', 'partially_paid']
+                ).values('id', 'reference', 'total_amount', 'paid_amount', 'date', 'status', 'remaining_amount')
                 response_data['outstanding_sales'] = list(outstanding_sales)
             else:  # supplier
                 from apps.inventory.models import StockSupply
                 outstanding_supplies = StockSupply.objects.filter(
                     supplier__account=account,
-                    payment_status__in=['partial', 'pending']
-                ).values('id', 'reference', 'total_amount', 'paid_amount', 'date')
+                    payment_status__in=['unpaid', 'partially_paid']
+                ).values('id', 'reference', 'total_amount', 'paid_amount', 'date', 'status', 'remaining_amount')
                 response_data['outstanding_supplies'] = list(outstanding_supplies)
             
             return Response(response_data)

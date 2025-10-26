@@ -7,7 +7,9 @@ from django.utils import timezone
 from django.db import transaction
 import qrcode
 import io
-import base64
+from django.http import HttpResponse
+from decimal import Decimal
+from django.db.models import Sum, Q
 
 from .models import (
     Product, Stock, StockSupply, StockCard,
@@ -22,8 +24,9 @@ from .serializers import (
     InventorySerializer,
     StockReturnSerializer
 )
-
-
+from apps.inventory.models import Product, Stock, StockSupply, StockCard
+from apps.treasury.models import Account, SupplierCashPayment, AccountStatement,SupplierCashPayment
+from apps.partners.models import Supplier
 class ProductViewSet(viewsets.ModelViewSet):
     """API endpoint for products"""
     queryset = Product.objects.all().order_by('name')
@@ -33,7 +36,6 @@ class ProductViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get'])
     def qr_code(self, request, pk=None):
         """Generate QR code for product"""
-        from django.http import HttpResponse
         
         product = self.get_object()
         
@@ -186,12 +188,11 @@ class StockSupplyViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def outstanding_by_supplier(self, request):
         """Get outstanding supplies by supplier"""
-        from django.db.models import Sum, Q
-        from apps.partners.models import Supplier
+        
         
         # Get all pending or partial supplies
         supplies = self.queryset.filter(
-            Q(payment_status='unpaid') | Q(payment_status='partial')
+            Q(payment_status='unpaid') | Q(payment_status='partially_paid')
         )
         
         # Group by supplier and sum amounts
@@ -219,7 +220,155 @@ class StockSupplyViewSet(viewsets.ModelViewSet):
         result.sort(key=lambda x: x['outstanding_amount'], reverse=True)
         return Response(result)
 
-
+    @action(detail=True, methods=['post'])
+    def pay_from_account(self, request, pk=None):
+        """Process payment for a supply from company account to supplier account"""
+        supply = self.get_object()
+        amount = Decimal(str(request.data.get('amount', 0)))
+        description = request.data.get('description', f'Payment for supply {supply.reference}')
+        company_account_id = request.data.get('company_account')
+        
+        if amount <= 0:
+            return Response(
+                {'error': 'Payment amount must be greater than 0'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not company_account_id:
+            return Response(
+                {'error': 'company_account parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            with transaction.atomic():
+                # Generate reference number
+                payment_count = SupplierCashPayment.objects.filter(
+                    date=timezone.now().date()
+                ).count()
+                reference = f"PAYSUPP-{timezone.now().strftime('%Y%m%d')}-{payment_count + 1:04d}"
+                
+                # Get the supplier's account
+                try:
+                    supplier_account = Account.objects.get(account_type='supplier', supplier=supply.supplier)
+                except Account.DoesNotExist:
+                    return Response(
+                        {'error': 'No account found for this supplier'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Get the company account
+                try:
+                    company_account = Account.objects.get(id=company_account_id)
+                except Account.DoesNotExist:
+                    return Response(
+                        {'error': 'Company account not found'}, 
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                
+                # Note: We allow payments even with insufficient balance
+                # This will result in a negative balance for the company account
+                
+                # Get last statement for supplier account
+                last_supplier_statement = AccountStatement.objects.filter(
+                    account=supplier_account
+                ).order_by('-date', '-id').first()
+                previous_supplier_balance = Decimal(str(last_supplier_statement.balance)) if last_supplier_statement else Decimal('0.00')
+                
+                # Get last statement for company account
+                last_company_statement = AccountStatement.objects.filter(
+                    account=company_account
+                ).order_by('-date', '-id').first()
+                previous_company_balance = Decimal(str(last_company_statement.balance)) if last_company_statement else Decimal('0.00')
+                
+                # Create SupplierCashPayment (payment record)
+                payment = SupplierCashPayment.objects.create(
+                    reference=reference,
+                    account=company_account,
+                    supply=supply,
+                    supplier=supply.supplier,
+                    date=timezone.now().date(),
+                    amount=amount,
+                    allocated_amount=amount,
+                    description=description,
+                    created_by=request.user
+                )
+                
+                # Debit supplier account (reduce what we owe)
+                new_supplier_balance = previous_supplier_balance - amount
+                AccountStatement.objects.create(
+                    account=supplier_account,
+                    date=timezone.now().date(),
+                    transaction_type='supply',
+                    reference=reference,
+                    description=f"Paiement approvisionnement {supply.reference} - {supply.supplier.name}",
+                    credit=0,
+                    debit=amount,
+                    balance=new_supplier_balance,
+                )
+                supplier_account.current_balance = new_supplier_balance
+                supplier_account.save(update_fields=['current_balance'])
+                
+                # Debit company account (money going out)
+                new_company_balance = previous_company_balance - amount
+                AccountStatement.objects.create(
+                    account=company_account,
+                    date=timezone.now().date(),
+                    transaction_type='supply',
+                    reference=reference,
+                    description=f"Paiement fournisseur {supply.supplier.name} pour approvisionnement {supply.reference}",
+                    credit=0,
+                    debit=amount,
+                    balance=new_company_balance,
+                )
+                company_account.current_balance = new_company_balance
+                company_account.save(update_fields=['current_balance'])
+                
+                # Update supply payment status and amounts
+                supply.refresh_from_db()
+                paid_amount = SupplierCashPayment.objects.filter(supply=supply).aggregate(
+                    total=Sum('allocated_amount')
+                )['total'] or Decimal('0')
+                
+                supply.paid_amount = paid_amount
+                supply.remaining_amount = supply.total_amount - paid_amount
+                
+                if paid_amount >= supply.total_amount:
+                    supply.payment_status = 'paid'
+                elif paid_amount > 0:
+                    supply.payment_status = 'partially_paid'
+                else:
+                    supply.payment_status = 'unpaid'
+                
+                supply.save()
+                
+                # Return the updated supplier and company balances
+                return Response({
+                    'success': True,
+                    'message': 'Payment processed successfully',
+                    'payment': {
+                        'id': payment.id,
+                        'reference': payment.reference,
+                        'amount': str(payment.amount),
+                        'date': payment.date.isoformat()
+                    },
+                    'supply': {
+                        'id': supply.id,
+                        'reference': supply.reference,
+                        'payment_status': supply.payment_status,
+                        'workflow_state': supply.status,
+                        'total_amount': str(supply.total_amount),
+                        'paid_amount': str(supply.paid_amount),
+                        'remaining_amount': str(supply.remaining_amount)
+                    },
+                    'supplier_balance': float(supplier_account.current_balance),
+                    'company_balance': float(company_account.current_balance)
+                })
+        except Exception as e:
+            return Response(
+                {'error': f'Error processing payment: {str(e)}'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 class StockCardViewSet(viewsets.ModelViewSet):
     """API endpoint for stock cards"""
     queryset = StockCard.objects.all().order_by('-date')
