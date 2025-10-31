@@ -93,29 +93,6 @@ class SaleSerializer(serializers.ModelSerializer):
             item.delete()
         
         return instance
-    
-    def delete(self, *args, **kwargs):
-        """Handle safe deletion - restore stock"""
-        sale = self.instance
-
-        # Restore stock for each sale item
-        for item in sale.items.all():
-            stock, created = Stock.objects.get_or_create(
-                product=item.product,
-                zone=sale.zone,
-                defaults={'quantity': 0}
-            )
-            stock.quantity += item.quantity
-            stock.save()
-
-        # Refund amount logic
-        if sale.paid_amount > 0 and sale.client and sale.client.account:
-            account = sale.client.account
-            account.current_balance += sale.paid_amount
-            account.save()
-
-        # Delete the sale itself
-        sale.delete()
 
 
 class DeliveryNoteItemSerializer(serializers.ModelSerializer):
@@ -205,7 +182,8 @@ class QuoteItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = QuoteItem
-        fields = '__all__'
+        fields = ['id', 'product', 'product_name', 'quantity', 'unit_price', 
+                  'discount_percentage', 'total_price']
 
 
 class QuoteSerializer(serializers.ModelSerializer):

@@ -2,10 +2,12 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 from django.utils import timezone
+from decimal import Decimal
 from apps.app_settings.models import ChargeType, UnitOfMeasure
 from apps.partners.models import Client
 from apps.inventory.models import Product
 from apps.core.models import Zone
+from apps.treasury.models import Account
 
 
 class Sale(models.Model):
@@ -81,6 +83,13 @@ class Sale(models.Model):
         return f"Sale {self.reference} - {self.client.name}"
     
     def save(self, *args, **kwargs):
+        # Check if this is a cancellation (status change to 'cancelled')
+        if self.pk:  # Only for existing sales
+            old_sale = Sale.objects.get(pk=self.pk)
+            if old_sale.status != 'cancelled' and self.status == 'cancelled':
+                # Sale is being cancelled - restore stock and reverse payments
+                self._handle_cancellation()
+        
         if self.status == 'confirmed':
             self.status = 'payment_pending'
         if not self.pk and not self.reference:
@@ -103,6 +112,127 @@ class Sale(models.Model):
                     self.reference = f"VNT-{year}-{next_number:03d}"
         super().save(*args, **kwargs)
     
+    def delete(self, *args, **kwargs):
+        """Handle safe deletion - restore stock and reverse payments"""
+        from apps.inventory.models import Stock, StockCard
+        from apps.treasury.models import AccountStatement, CashReceipt
+        
+        # Restore stock for each sale item and create StockCard entries
+        for item in self.items.all():
+            stock, created = Stock.objects.get_or_create(
+                product=item.product,
+                zone=self.zone,
+                defaults={'quantity': 0}
+            )
+            stock.quantity += item.quantity
+            stock.save()
+            
+            # Create StockCard entry for the return
+            StockCard.objects.create(
+                product=item.product,
+                zone=self.zone,
+                date=timezone.now().date(),
+                transaction_type='return',
+                reference=f"RETURN-{self.reference}",
+                quantity_in=item.quantity,
+                quantity_out=0,
+                notes=f"Sale deletion return: {self.reference}"
+            )
+        
+        # Reverse payments - create reversing AccountStatement entries
+        self._reverse_payments()
+        
+        # Delete the sale itself
+        super().delete(*args, **kwargs)
+    
+    def _reverse_payments(self):
+        """Reverse all payment transactions for this sale"""
+        from apps.treasury.models import AccountStatement, CashReceipt
+        
+        # Get all cash receipts for this sale
+        cash_receipts = CashReceipt.objects.filter(sale=self)
+        
+        for receipt in cash_receipts:
+            # Get the client account
+            try:
+                client_account = Account.objects.get(account_type='client', client=self.client)
+            except Account.DoesNotExist:
+                continue
+            
+            # Get the company account
+            company_account = receipt.account
+            
+            # Get last statements for both accounts
+            last_client_statement = AccountStatement.objects.filter(
+                account=client_account
+            ).order_by('-date', '-id').first()
+            client_balance = last_client_statement.balance if last_client_statement else Decimal('0.00')
+            
+            last_company_statement = AccountStatement.objects.filter(
+                account=company_account
+            ).order_by('-date', '-id').first()
+            company_balance = last_company_statement.balance if last_company_statement else Decimal('0.00')
+            
+            # Create reversing entries
+            # Credit client account (reverse the debit)
+            new_client_balance = client_balance + receipt.allocated_amount
+            AccountStatement.objects.create(
+                account=client_account,
+                date=timezone.now().date(),
+                transaction_type='sale',
+                reference=f"REV-{receipt.reference}",
+                description=f"Annulation paiement vente {self.reference}",
+                credit=receipt.allocated_amount,
+                debit=0,
+                balance=new_client_balance,
+            )
+            client_account.current_balance = new_client_balance
+            client_account.save(update_fields=['current_balance'])
+            
+            # Debit company account (reverse the credit)
+            new_company_balance = company_balance - receipt.allocated_amount
+            AccountStatement.objects.create(
+                account=company_account,
+                date=timezone.now().date(),
+                transaction_type='sale',
+                reference=f"REV-{receipt.reference}",
+                description=f"Annulation encaissement vente {self.reference}",
+                credit=0,
+                debit=receipt.allocated_amount,
+                balance=new_company_balance,
+            )
+            company_account.current_balance = new_company_balance
+            company_account.save(update_fields=['current_balance'])
+    
+    def _handle_cancellation(self):
+        """Handle sale cancellation - restore stock and reverse payments"""
+        from apps.inventory.models import Stock, StockCard
+        
+        # Restore stock for each sale item and create StockCard entries
+        for item in self.items.all():
+            stock, created = Stock.objects.get_or_create(
+                product=item.product,
+                zone=self.zone,
+                defaults={'quantity': 0}
+            )
+            stock.quantity += item.quantity
+            stock.save()
+            
+            # Create StockCard entry for the cancellation return
+            StockCard.objects.create(
+                product=item.product,
+                zone=self.zone,
+                date=timezone.now().date(),
+                transaction_type='return',
+                reference=f"CANCEL-{self.reference}",
+                quantity_in=item.quantity,
+                quantity_out=0,
+                notes=f"Sale cancellation: {self.reference}"
+            )
+        
+        # Reverse payments
+        self._reverse_payments()
+
     class Meta:
         db_table = 'gestion_api_sale'
         verbose_name = "Vente"
