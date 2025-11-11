@@ -26,6 +26,7 @@ class ExpenseSerializer(serializers.ModelSerializer):
         fields = ['id', 'reference', 'category', 'category_name', 'account', 'account_name', 
                   'date', 'amount', 'description', 'payment_method', 'payment_method_name',
                   'status', 'created_by', 'created_by_name', 'created_at']
+        read_only_fields = ['reference']  # Auto-generated
 
 
 class ClientPaymentSerializer(serializers.ModelSerializer):
@@ -62,6 +63,7 @@ class AccountTransferSerializer(serializers.ModelSerializer):
     class Meta:
         model = AccountTransfer
         fields = '__all__'
+        read_only_fields = ['reference']  # Auto-generated
 
 
 class CashReceiptSerializer(serializers.ModelSerializer):
@@ -73,6 +75,7 @@ class CashReceiptSerializer(serializers.ModelSerializer):
     class Meta:
         model = CashReceipt
         fields = '__all__'
+        read_only_fields = ['reference']  # Auto-generated, should not be provided by client
 
 
 class SupplierCashPaymentSerializer(serializers.ModelSerializer):

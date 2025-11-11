@@ -2,7 +2,9 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.core.validators import MinValueValidator
 from apps.app_settings.models import Currency, ExpenseCategory, PaymentMethod
-
+from django.db import transaction
+from django.utils import timezone
+            
 
 class Account(models.Model):
     """
@@ -79,6 +81,35 @@ class Expense(models.Model):
         related_name='treasury_expenses_created'
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.reference:
+           
+            with transaction.atomic():
+                year = timezone.now().year
+                last_expense = Expense.objects.filter(
+                    reference__startswith=f"DEP-{year}-"
+                ).select_for_update().order_by('-reference').first()
+                
+                if last_expense:
+                    try:
+                        last_number = int(last_expense.reference.split('-')[-1])
+                        next_number = last_number + 1
+                    except (ValueError, IndexError):
+                        count = Expense.objects.filter(
+                            reference__startswith=f"DEP-{year}-"
+                        ).count()
+                        next_number = count + 1
+                else:
+                    next_number = 1
+                
+                self.reference = f"DEP-{year}-{next_number:03d}"
+                
+                while Expense.objects.filter(reference=self.reference).exists():
+                    next_number += 1
+                    self.reference = f"DEP-{year}-{next_number:03d}"
+        
+        super().save(*args, **kwargs)
     
     def __str__(self):
         return f"Dépense {self.reference} - {self.amount}"
@@ -218,6 +249,35 @@ class AccountTransfer(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.reference:
+            
+            with transaction.atomic():
+                year = timezone.now().year
+                last_transfer = AccountTransfer.objects.filter(
+                    reference__startswith=f"VIR-{year}-"
+                ).select_for_update().order_by('-reference').first()
+                
+                if last_transfer:
+                    try:
+                        last_number = int(last_transfer.reference.split('-')[-1])
+                        next_number = last_number + 1
+                    except (ValueError, IndexError):
+                        count = AccountTransfer.objects.filter(
+                            reference__startswith=f"VIR-{year}-"
+                        ).count()
+                        next_number = count + 1
+                else:
+                    next_number = 1
+                
+                self.reference = f"VIR-{year}-{next_number:03d}"
+                
+                while AccountTransfer.objects.filter(reference=self.reference).exists():
+                    next_number += 1
+                    self.reference = f"VIR-{year}-{next_number:03d}"
+        
+        super().save(*args, **kwargs)
+    
     def __str__(self):
         return f"Virement {self.reference} - {self.from_account.name} → {self.to_account.name} - {self.amount}"
     
@@ -279,6 +339,35 @@ class CashReceipt(models.Model):
         related_name='treasury_cash_receipts_created'
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    def save(self, *args, **kwargs):
+        if not self.pk and not self.reference:
+           
+            with transaction.atomic():
+                year = timezone.now().year
+                last_receipt = CashReceipt.objects.filter(
+                    reference__startswith=f"ENC-{year}-"
+                ).select_for_update().order_by('-reference').first()
+                
+                if last_receipt:
+                    try:
+                        last_number = int(last_receipt.reference.split('-')[-1])
+                        next_number = last_number + 1
+                    except (ValueError, IndexError):
+                        count = CashReceipt.objects.filter(
+                            reference__startswith=f"ENC-{year}-"
+                        ).count()
+                        next_number = count + 1
+                else:
+                    next_number = 1
+                
+                self.reference = f"ENC-{year}-{next_number:03d}"
+                
+                while CashReceipt.objects.filter(reference=self.reference).exists():
+                    next_number += 1
+                    self.reference = f"ENC-{year}-{next_number:03d}"
+        
+        super().save(*args, **kwargs)
     
     def __str__(self):
         return f"Encaissement {self.reference} - {self.amount}"

@@ -5,6 +5,9 @@ from rest_framework.permissions import IsAuthenticated
 from django.db.models import F
 from django.utils import timezone
 from django.db import transaction
+from django.core.cache import cache
+from django.views.decorators.cache import cache_page
+from django.utils.decorators import method_decorator
 import qrcode
 import io
 from django.http import HttpResponse
@@ -35,18 +38,30 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def qr_code(self, request, pk=None):
-        """Generate QR code for product"""
+        """Generate QR code for product
+        
+        QR code contains only the product reference for easy scanning.
+        The scanner will match this reference to lookup the full product.
+        Uses caching to improve performance.
+        """
         
         product = self.get_object()
+        cache_key = f'qr_code_product_{product.id}_{product.reference}'
         
-        # Create QR code
+        # Try to get from cache first
+        cached_qr = cache.get(cache_key)
+        if cached_qr:
+            return HttpResponse(cached_qr, content_type='image/png')
+        
+        # Create QR code with only the product reference
+        # This ensures the scanner can directly match by reference
         qr = qrcode.QRCode(
             version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            error_correction=qrcode.constants.ERROR_CORRECT_H,  # Higher error correction for better reliability
             box_size=10,
             border=4,
         )
-        qr.add_data(f"Product: {product.name} - Reference: {product.reference}")
+        qr.add_data(product.reference)
         qr.make(fit=True)
         
         # Create image
@@ -56,9 +71,13 @@ class ProductViewSet(viewsets.ModelViewSet):
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
+        qr_image_data = buffer.getvalue()
+        
+        # Cache for 24 hours (QR codes rarely change)
+        cache.set(cache_key, qr_image_data, 60 * 60 * 24)
         
         # Return as image response
-        return HttpResponse(buffer.getvalue(), content_type='image/png')
+        return HttpResponse(qr_image_data, content_type='image/png')
 
 
 class StockViewSet(viewsets.ModelViewSet):
@@ -393,14 +412,6 @@ class InventoryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-        if not serializer.validated_data.get('reference'):
-            today = timezone.now()
-            datestr = today.strftime("%Y%m%d")
-            with transaction.atomic():
-                count = Inventory.objects.filter(reference__startswith=f'INV-{datestr}').count()
-                reference = f'INV-{datestr}-{count+1:04d}'
-            serializer.validated_data['reference'] = reference
-        
         serializer.save(created_by=self.request.user)
 
 

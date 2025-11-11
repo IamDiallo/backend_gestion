@@ -23,9 +23,6 @@ class UserProfile(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - {self.role}"
-    
-    class Meta:
-        db_table = 'gestion_api_userprofile'  # Point to existing table
 
     def has_permission(self, permission_code):
         """Check if user has a specific permission through Django's permission system"""

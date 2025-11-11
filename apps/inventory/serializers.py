@@ -263,6 +263,7 @@ class StockTransferItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockTransferItem
         fields = ['id', 'transfer', 'product', 'product_name', 'quantity', 'transferred_quantity', 'unit_symbol']
+        read_only_fields = ['transfer']
     
     def get_unit_symbol(self, obj):
         try:
@@ -279,7 +280,7 @@ class StockTransferSerializer(serializers.ModelSerializer):
     """
     from_zone_name = serializers.CharField(source='from_zone.name', read_only=True)
     to_zone_name = serializers.CharField(source='to_zone.name', read_only=True)
-    items = StockTransferItemSerializer(many=True, read_only=True)
+    items = StockTransferItemSerializer(many=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     
     class Meta:
@@ -287,6 +288,125 @@ class StockTransferSerializer(serializers.ModelSerializer):
         fields = ['id', 'reference', 'from_zone', 'from_zone_name', 'to_zone', 'to_zone_name', 
                   'date', 'status', 'notes', 'items', 'created_by', 'created_by_username', 'created_at']
         read_only_fields = ['reference', 'created_by', 'created_at']
+    
+    def create(self, validated_data):
+        """Create transfer with items"""
+        items_data = validated_data.pop('items')
+        
+        # Generate reference if not provided
+        if not validated_data.get('reference'):
+            today = timezone.now()
+            datestr = today.strftime("%Y%m%d")
+            count = StockTransfer.objects.filter(reference__startswith=f'TRF-{datestr}').count()
+            validated_data['reference'] = f'TRF-{datestr}-{count+1:04d}'
+        
+        transfer = StockTransfer.objects.create(**validated_data)
+        
+        # Create items
+        for item_data in items_data:
+            # Remove read-only fields that might be sent by frontend
+            item_data.pop('transfer', None)
+            item_data.pop('id', None)
+            StockTransferItem.objects.create(transfer=transfer, **item_data)
+        
+        # Update stock if status is completed
+        if transfer.status == 'completed':
+            self._update_stock_and_create_stockcard(transfer)
+        
+        return transfer
+    
+    def update(self, instance, validated_data):
+        """Update transfer with items"""
+        items_data = validated_data.pop('items', [])
+        status_before = instance.status
+        
+        # Update transfer fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        # Update items
+        existing_items = {item.id: item for item in instance.items.all()}
+        processed_item_ids = set()
+        
+        for item_data in items_data:
+            item_id = item_data.get('id')
+            # Remove read-only fields
+            item_data.pop('transfer', None)
+            
+            if item_id and item_id in existing_items:
+                # Update existing item
+                item = existing_items[item_id]
+                for key, val in item_data.items():
+                    if key != 'id':
+                        setattr(item, key, val)
+                item.save()
+                processed_item_ids.add(item_id)
+            else:
+                # Create new item - remove id if present
+                item_data.pop('id', None)
+                new_item = StockTransferItem.objects.create(transfer=instance, **item_data)
+                processed_item_ids.add(new_item.id)
+        
+        # Delete items that are no longer present
+        for item in existing_items.values():
+            if item.id not in processed_item_ids:
+                item.delete()
+        
+        # Update stock if status changed to completed
+        if status_before != 'completed' and instance.status == 'completed':
+            self._update_stock_and_create_stockcard(instance)
+        
+        return instance
+    
+    def _update_stock_and_create_stockcard(self, transfer):
+        """Update stock quantities and create stock cards for completed transfers"""
+        from decimal import Decimal
+        
+        for item in transfer.items.all():
+            quantity = item.transferred_quantity if item.transferred_quantity > 0 else item.quantity
+            
+            # Decrease stock in source zone
+            source_stock, _ = Stock.objects.get_or_create(
+                product=item.product, 
+                zone=transfer.from_zone, 
+                defaults={'quantity': 0}
+            )
+            source_stock.quantity -= quantity
+            source_stock.save()
+            
+            # Increase stock in destination zone
+            dest_stock, _ = Stock.objects.get_or_create(
+                product=item.product, 
+                zone=transfer.to_zone, 
+                defaults={'quantity': 0}
+            )
+            dest_stock.quantity += quantity
+            dest_stock.save()
+            
+            # Create stock card for source zone (out)
+            StockCard.objects.create(
+                product=item.product,
+                zone=transfer.from_zone,
+                date=transfer.date,
+                transaction_type='transfer_out',
+                reference=transfer.reference,
+                quantity_in=Decimal('0.00'),
+                quantity_out=quantity,
+                notes=f"Transfer to {transfer.to_zone.name}: {transfer.reference}"
+            )
+            
+            # Create stock card for destination zone (in)
+            StockCard.objects.create(
+                product=item.product,
+                zone=transfer.to_zone,
+                date=transfer.date,
+                transaction_type='transfer_in',
+                reference=transfer.reference,
+                quantity_in=quantity,
+                quantity_out=Decimal('0.00'),
+                notes=f"Transfer from {transfer.from_zone.name}: {transfer.reference}"
+            )
 
 
 class InventoryItemSerializer(serializers.ModelSerializer):
@@ -300,6 +420,7 @@ class InventoryItemSerializer(serializers.ModelSerializer):
         model = InventoryItem
         fields = ['id', 'inventory', 'product', 'product_name', 'expected_quantity', 
                   'actual_quantity', 'difference', 'notes', 'unit_symbol']
+        read_only_fields = ['inventory', 'difference']
     
     def get_unit_symbol(self, obj):
         try:
@@ -315,7 +436,7 @@ class InventorySerializer(serializers.ModelSerializer):
     Serializer pour les inventaires de stock
     """
     zone_name = serializers.CharField(source='zone.name', read_only=True)
-    items = InventoryItemSerializer(many=True, read_only=True)
+    items = InventoryItemSerializer(many=True)
     created_by_username = serializers.CharField(source='created_by.username', read_only=True)
     
     class Meta:
@@ -323,6 +444,124 @@ class InventorySerializer(serializers.ModelSerializer):
         fields = ['id', 'reference', 'zone', 'zone_name', 'date', 'status', 'notes', 
                   'items', 'created_by', 'created_by_username', 'created_at']
         read_only_fields = ['reference', 'created_by', 'created_at']
+    
+    def create(self, validated_data):
+        """Create inventory with items"""
+        items_data = validated_data.pop('items')
+        
+        # Generate reference if not provided
+        if not validated_data.get('reference'):
+            today = timezone.now()
+            datestr = today.strftime("%Y%m%d")
+            count = Inventory.objects.filter(reference__startswith=f'INV-{datestr}').count()
+            validated_data['reference'] = f'INV-{datestr}-{count+1:04d}'
+        
+        inventory = Inventory.objects.create(**validated_data)
+        
+        # Create items
+        for item_data in items_data:
+            # Remove read-only fields that might be sent by frontend
+            item_data.pop('inventory', None)
+            item_data.pop('id', None)
+            item_data.pop('difference', None)
+            InventoryItem.objects.create(inventory=inventory, **item_data)
+        
+        # Update stock if status is completed
+        if inventory.status == 'completed':
+            self._update_stock_and_create_stockcard(inventory)
+        
+        return inventory
+    
+    def update(self, instance, validated_data):
+        """Update inventory with items"""
+        items_data = validated_data.pop('items', [])
+        status_before = instance.status
+        
+        # Update inventory fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        # Update items
+        existing_items = {item.id: item for item in instance.items.all()}
+        processed_item_ids = set()
+        
+        for item_data in items_data:
+            item_id = item_data.get('id')
+            # Remove read-only fields
+            item_data.pop('inventory', None)
+            item_data.pop('difference', None)
+            
+            if item_id and item_id in existing_items:
+                # Update existing item
+                item = existing_items[item_id]
+                for key, val in item_data.items():
+                    if key != 'id':
+                        setattr(item, key, val)
+                item.save()
+                processed_item_ids.add(item_id)
+            else:
+                # Create new item - remove id if present
+                item_data.pop('id', None)
+                new_item = InventoryItem.objects.create(inventory=instance, **item_data)
+                processed_item_ids.add(new_item.id)
+        
+        # Delete items that are no longer present
+        for item in existing_items.values():
+            if item.id not in processed_item_ids:
+                item.delete()
+        
+        # Update stock if status changed to completed
+        if status_before != 'completed' and instance.status == 'completed':
+            self._update_stock_and_create_stockcard(instance)
+        
+        return instance
+    
+    def _update_stock_and_create_stockcard(self, inventory):
+        """Update stock quantities and create stock cards for completed inventories"""
+        from decimal import Decimal
+        
+        for item in inventory.items.all():
+            # Calculate difference
+            difference = item.actual_quantity - item.expected_quantity
+            item.difference = difference
+            item.save(update_fields=['difference'])
+            
+            if difference != 0:
+                # Update stock
+                stock, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    zone=inventory.zone,
+                    defaults={'quantity': 0}
+                )
+                stock.quantity = item.actual_quantity
+                stock.save()
+                
+                # Create stock card
+                if difference > 0:
+                    # Surplus
+                    StockCard.objects.create(
+                        product=item.product,
+                        zone=inventory.zone,
+                        date=inventory.date,
+                        transaction_type='adjustment_in',
+                        reference=inventory.reference,
+                        quantity_in=difference,
+                        quantity_out=Decimal('0.00'),
+                        notes=f"Inventory adjustment (surplus): {inventory.reference}"
+                    )
+                else:
+                    # Shortage
+                    StockCard.objects.create(
+                        product=item.product,
+                        zone=inventory.zone,
+                        date=inventory.date,
+                        transaction_type='adjustment_out',
+                        reference=inventory.reference,
+                        quantity_in=Decimal('0.00'),
+                        quantity_out=abs(difference),
+                        notes=f"Inventory adjustment (shortage): {inventory.reference}"
+                    )
 
 
 class StockReturnItemSerializer(serializers.ModelSerializer):

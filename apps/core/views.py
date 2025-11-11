@@ -67,7 +67,23 @@ class UserViewSet(viewsets.ModelViewSet):
             ).values_list('codename', flat=True))
             permissions.extend(group_permissions)
         
-        return Response({'permissions': list(set(permissions))})
+        # Get user role and groups
+        role = None
+        groups = []
+        try:
+            profile = user.userprofile
+            role = profile.role
+        except:
+            pass
+        
+        groups = list(user.groups.values_list('name', flat=True))
+        
+        return Response({
+            'permissions': list(set(permissions)),
+            'is_admin': user.is_superuser or user.is_staff,
+            'role': role,
+            'groups': groups
+        })
 
 
 class ZoneViewSet(viewsets.ModelViewSet):

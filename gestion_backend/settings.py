@@ -12,7 +12,7 @@ import dj_database_url
 # Initialize environ
 env = environ.Env(
     DEBUG=(bool, False),
-    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1','ec2-3-87-10-136.compute-1.amazonaws.com']),
+    ALLOWED_HOSTS=(list, ['localhost', '127.0.0.1']),
     SECURE_SSL_REDIRECT=(bool, True),
     SESSION_COOKIE_SECURE=(bool, True),
     CSRF_COOKIE_SECURE=(bool, True),
@@ -55,12 +55,6 @@ INSTALLED_APPS = [
     'apps.treasury.apps.TreasuryConfig',
     'apps.app_settings.apps.AppSettingsConfig',
     'apps.dashboard.apps.DashboardConfig',  # Dashboard aggregation layer
-    
-    # Legacy app - KEPT FOR MIGRATION DEPENDENCIES ONLY
-    # Models are commented out, but migrations are needed for domain apps
-    # Do not use gestion_api models - use domain apps instead
-        # Legacy app - KEPT FOR MIGRATION DEPENDENCIES ONLY
-    # 'gestion_api',  # DEPRECATED - All functionality moved to domain-driven apps
 
 ]
 
@@ -74,8 +68,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'gestion_api.middleware.ErrorHandlingMiddleware',
-    'gestion_api.middleware.PermissionMiddleware',
 ]
 
 
@@ -85,6 +77,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 if DEBUG:
     # Development CORS settings - more permissive
+    # Allows access from localhost, 127.0.0.1, and local network IP (for mobile access)
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:3000",
         "http://localhost:5173",
@@ -310,11 +303,6 @@ LOGGING = {
         'django': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
-            'propagate': True,
-        },
-        'gestion_api': {
-            'handlers': ['console', 'file'],
-            'level': 'DEBUG',
             'propagate': True,
         },
     },

@@ -16,3 +16,10 @@ dj-database-url==2.1.0
 # Security
 django-debug-toolbar==4.2.0  # Only enable in development
 pillow==10.0.0  # For image processing, if needed
+
+# Testing dependencies
+pytest==7.4.3
+pytest-django==4.7.0
+pytest-cov==4.1.0
+factory-boy==3.3.0
+faker==20.1.0

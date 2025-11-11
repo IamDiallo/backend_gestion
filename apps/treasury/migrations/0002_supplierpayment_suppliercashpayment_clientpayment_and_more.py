@@ -52,7 +52,7 @@ class Migration(migrations.Migration):
                 ('created_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='treasury_supplier_cash_payments_created', to=settings.AUTH_USER_MODEL)),
                 ('payment_method', models.ForeignKey(null=True, on_delete=django.db.models.deletion.PROTECT, related_name='treasury_supplier_cash_payments', to='app_settings.paymentmethod')),
                 ('supplier', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='treasury_cash_payments', to='partners.supplier')),
-                ('supply', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='payments', to='gestion_api.stocksupply')),
+                ('supply', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='payments', to='inventory.stocksupply')),
             ],
             options={
                 'verbose_name': 'Paiement fournisseur',
