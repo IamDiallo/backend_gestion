@@ -51,12 +51,21 @@ class StockSerializer(serializers.ModelSerializer):
 
 class StockSupplyItemSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
+    unit_symbol = serializers.SerializerMethodField()
 
     class Meta:
         model = StockSupplyItem
-        fields = ['id', 'supply', 'product', 'product_name', 'quantity', 'received_quantity', 'unit_price', 'total_price']
-        read_only_fields = ['id', 'product_name']
+        fields = ['id', 'supply', 'product', 'product_name', 'quantity', 'received_quantity', 'unit_price', 'total_price', 'unit_symbol']
+        read_only_fields = ['id', 'product_name', 'unit_symbol']
         extra_kwargs = {'supply': {'required': False}}
+    
+    def get_unit_symbol(self, obj):
+        try:
+            if obj.product and obj.product.unit:
+                return obj.product.unit.symbol
+        except:
+            pass
+        return None
 
     def to_representation(self, instance):
         """Custom representation to ensure ID is always included"""
@@ -464,6 +473,19 @@ class InventorySerializer(serializers.ModelSerializer):
             item_data.pop('inventory', None)
             item_data.pop('id', None)
             item_data.pop('difference', None)
+            
+            # Auto-fill expected_quantity with current stock if not provided or is 0
+            if 'expected_quantity' not in item_data or item_data.get('expected_quantity') == 0:
+                try:
+                    stock = Stock.objects.get(
+                        product=item_data['product'],
+                        zone=inventory.zone
+                    )
+                    item_data['expected_quantity'] = stock.quantity
+                except Stock.DoesNotExist:
+                    # If no stock exists, expected quantity is 0
+                    item_data['expected_quantity'] = 0
+            
             InventoryItem.objects.create(inventory=inventory, **item_data)
         
         # Update stock if status is completed
@@ -503,6 +525,19 @@ class InventorySerializer(serializers.ModelSerializer):
             else:
                 # Create new item - remove id if present
                 item_data.pop('id', None)
+                
+                # Auto-fill expected_quantity with current stock if not provided or is 0
+                if 'expected_quantity' not in item_data or item_data.get('expected_quantity') == 0:
+                    try:
+                        stock = Stock.objects.get(
+                            product=item_data['product'],
+                            zone=instance.zone
+                        )
+                        item_data['expected_quantity'] = stock.quantity
+                    except Stock.DoesNotExist:
+                        # If no stock exists, expected quantity is 0
+                        item_data['expected_quantity'] = 0
+                
                 new_item = InventoryItem.objects.create(inventory=instance, **item_data)
                 processed_item_ids.add(new_item.id)
         
@@ -525,26 +560,27 @@ class InventorySerializer(serializers.ModelSerializer):
             # Calculate difference
             difference = item.actual_quantity - item.expected_quantity
             item.difference = difference
-            item.save(update_fields=['difference'])
+            item.save()  # Don't use update_fields to avoid force_update issues with new items
             
+            # ALWAYS update stock with actual_quantity when inventory is completed
+            # This is the core principle of physical inventory - we trust the physical count
+            stock, _ = Stock.objects.get_or_create(
+                product=item.product,
+                zone=inventory.zone,
+                defaults={'quantity': 0}
+            )
+            stock.quantity = item.actual_quantity
+            stock.save()
+            
+            # Create stock card only if there's a difference
             if difference != 0:
-                # Update stock
-                stock, _ = Stock.objects.get_or_create(
-                    product=item.product,
-                    zone=inventory.zone,
-                    defaults={'quantity': 0}
-                )
-                stock.quantity = item.actual_quantity
-                stock.save()
-                
-                # Create stock card
                 if difference > 0:
                     # Surplus
                     StockCard.objects.create(
                         product=item.product,
                         zone=inventory.zone,
                         date=inventory.date,
-                        transaction_type='adjustment_in',
+                        transaction_type='Sortie Adjustment Inventaire',
                         reference=inventory.reference,
                         quantity_in=difference,
                         quantity_out=Decimal('0.00'),
@@ -556,7 +592,7 @@ class InventorySerializer(serializers.ModelSerializer):
                         product=item.product,
                         zone=inventory.zone,
                         date=inventory.date,
-                        transaction_type='adjustment_out',
+                        transaction_type='Entrée Adjustment Inventaire',
                         reference=inventory.reference,
                         quantity_in=Decimal('0.00'),
                         quantity_out=abs(difference),
