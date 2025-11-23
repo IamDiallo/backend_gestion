@@ -1,4 +1,5 @@
 from decimal import Decimal
+from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -192,6 +193,41 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
             # Get outstanding sales or supplies based on entity type
             if entity_type == 'client':
                 from apps.sales.models import Sale
+                from apps.partners.models import Client
+                
+                # Get client associated with this account
+                client = Client.objects.filter(account=account).first()
+                
+                if client:
+                    # Calculate total sales (all sales for this client)
+                    all_sales = Sale.objects.filter(client=client)
+                    total_sales = sum(sale.total_amount for sale in all_sales)
+                    
+                    # Calculate total payments from account (sum of all credits in account statements from sales)
+                    sale_payments = AccountStatement.objects.filter(
+                        account=account,
+                        transaction_type__in=['sale', 'client_payment']
+                    ).aggregate(total=models.Sum('credit'))['total'] or Decimal('0.00')
+                    
+                    # Calculate total account credits (deposits/cash receipts)
+                    total_credits = AccountStatement.objects.filter(
+                        account=account,
+                        transaction_type='cash_receipt'
+                    ).aggregate(total=models.Sum('credit'))['total'] or Decimal('0.00')
+                    
+                    response_data.update({
+                        'client_id': client.id,
+                        'client_name': client.name,
+                        'total_sales': total_sales,
+                        'total_account_credits': total_credits,
+                        'sale_payments_from_account': sale_payments,
+                        'sales_count': all_sales.count(),
+                        'payments_count': AccountStatement.objects.filter(
+                            account=account,
+                            transaction_type__in=['sale', 'client_payment', 'cash_receipt']
+                        ).count(),
+                    })
+                
                 outstanding_sales = Sale.objects.filter(
                     client__account=account,
                     payment_status__in=['pending_paiement','unpaid', 'partially_paid']
@@ -199,6 +235,41 @@ class AccountStatementViewSet(viewsets.ModelViewSet):
                 response_data['outstanding_sales'] = list(outstanding_sales)
             else:  # supplier
                 from apps.inventory.models import StockSupply
+                from apps.partners.models import Supplier
+                
+                # Get supplier associated with this account
+                supplier = Supplier.objects.filter(account=account).first()
+                
+                if supplier:
+                    # Calculate total purchases (all supplies for this supplier)
+                    all_supplies = StockSupply.objects.filter(supplier=supplier)
+                    total_purchases = sum(supply.total_amount for supply in all_supplies)
+                    
+                    # Calculate total payments from account
+                    purchase_payments = AccountStatement.objects.filter(
+                        account=account,
+                        transaction_type__in=['supply', 'supplier_payment']
+                    ).aggregate(total=models.Sum('debit'))['total'] or Decimal('0.00')
+                    
+                    # Calculate total account credits (cash payments)
+                    total_credits = AccountStatement.objects.filter(
+                        account=account,
+                        transaction_type='supplier_cash_payment'
+                    ).aggregate(total=models.Sum('credit'))['total'] or Decimal('0.00')
+                    
+                    response_data.update({
+                        'supplier_id': supplier.id,
+                        'supplier_name': supplier.name,
+                        'total_purchases': total_purchases,
+                        'total_account_credits': total_credits,
+                        'purchase_payments_from_account': purchase_payments,
+                        'purchases_count': all_supplies.count(),
+                        'payments_count': AccountStatement.objects.filter(
+                            account=account,
+                            transaction_type__in=['supply', 'supplier_payment', 'supplier_cash_payment']
+                        ).count(),
+                    })
+                
                 outstanding_supplies = StockSupply.objects.filter(
                     supplier__account=account,
                     payment_status__in=['unpaid', 'partially_paid']

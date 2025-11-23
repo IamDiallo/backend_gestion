@@ -86,6 +86,20 @@ class StockViewSet(viewsets.ModelViewSet):
     serializer_class = StockSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        """Filter stock by zone if provided"""
+        queryset = Stock.objects.all().order_by('product__name')
+        zone_id = self.request.query_params.get('zone', None)
+        
+        if zone_id is not None:
+            try:
+                queryset = queryset.filter(zone_id=zone_id)
+            except ValueError:
+                # Invalid zone_id, return empty queryset
+                queryset = Stock.objects.none()
+        
+        return queryset
+
     @action(detail=False, methods=['get'])
     def low_stock(self, request):
         """Get products with low stock levels"""

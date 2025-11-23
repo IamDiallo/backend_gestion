@@ -101,7 +101,34 @@ class SupplierCashPaymentSerializer(serializers.ModelSerializer):
 class AccountStatementSerializer(serializers.ModelSerializer):
     transaction_type_display = serializers.CharField(source='get_transaction_type_display', read_only=True)
     account_name = serializers.CharField(source='account.name', read_only=True)
+    sale_details = serializers.SerializerMethodField()
     
     class Meta:
         model = AccountStatement
         fields = '__all__'
+    
+    def get_sale_details(self, obj):
+        """Get sale details for sale payment transactions"""
+        if obj.transaction_type not in ['sale', 'client_payment']:
+            return None
+        
+        # Try to find the CashReceipt by reference
+        try:
+            from .models import CashReceipt
+            cash_receipt = CashReceipt.objects.select_related('sale', 'client').get(reference=obj.reference)
+            
+            if cash_receipt.sale:
+                sale = cash_receipt.sale
+                return {
+                    'sale_reference': sale.reference,
+                    'sale_total': float(sale.total_amount),
+                    'sale_paid_amount': float(sale.paid_amount),
+                    'sale_remaining_amount': float(sale.remaining_amount),
+                    'client_name': cash_receipt.client.name if cash_receipt.client else '',
+                    'payment_amount': float(cash_receipt.amount),
+                    'payment_status': 'full' if sale.remaining_amount == 0 else 'partial'
+                }
+        except:
+            pass
+        
+        return None
